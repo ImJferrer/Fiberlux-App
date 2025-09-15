@@ -1,0 +1,1910 @@
+import 'package:fiberlux_new_app/widgets/buildAppBarNotifications/buildappbarnotifications.dart';
+import 'package:fiberlux_new_app/widgets/menu.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import '../providers/SessionProvider.dart';
+import '../services/acordeon_services.dart';
+import 'login.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../providers/graph_socket_provider.dart';
+import 'dart:convert';
+
+class EntidadDashboard extends StatefulWidget {
+  final String? initialStatus;
+  final void Function(String status)? onStatusTap;
+
+  const EntidadDashboard({Key? key, this.initialStatus, this.onStatusTap})
+    : super(key: key);
+
+  @override
+  State<EntidadDashboard> createState() => EntidadDashboardState();
+}
+
+class EntidadDashboardState extends State<EntidadDashboard> {
+  String? selectedStatus;
+  List<Map<String, dynamic>> allServices = [];
+  bool isLoadingServices = false;
+  String? errorMessage;
+  bool hasNotifications = true;
+
+  String _composeDireccionCompleta(Map item) {
+    final String dir = (item['direccionodoo'] ?? '').toString().trim();
+    final String dist = (item['distritoodoo'] ?? '').toString().trim();
+    final String prov = (item['provinciaodoo'] ?? '').toString().trim();
+    final String dpto = (item['dptoodoo'] ?? '').toString().trim();
+
+    // Bloque de ubicación: "Distrito - Provincia - Dpto"
+    final ubicacionParts = [
+      dist,
+      prov,
+      dpto,
+    ].where((e) => e.isNotEmpty).toList();
+    final String ubicacion = ubicacionParts.isEmpty
+        ? ''
+        : ubicacionParts.join(' - ');
+
+    // Dirección final:
+    // - Si hay dir y ubicacion: "dir • ubicacion"
+    // - Si solo hay dir: "dir"
+    // - Si solo hay ubicacion: "ubicacion"
+    if (dir.isNotEmpty && ubicacion.isNotEmpty) return '$dir • $ubicacion';
+    if (dir.isNotEmpty) return dir;
+    return ubicacion.isNotEmpty ? ubicacion : 'Sin dirección';
+  }
+
+  /// Método público para refrescar desde afuera (BottomNavBar / parent)
+  Future<void> refresh() async {
+    // Si quieres, resetea búsqueda y filtro aquí
+    setState(() {
+      selectedStatus = widget.initialStatus;
+      _searchController.clear();
+      searchQuery = '';
+      isSearching = false;
+    });
+    await _loadAllServices();
+  }
+
+  // NUEVO: Controladores y estado para búsqueda
+  final TextEditingController _searchController = TextEditingController();
+  String searchQuery = '';
+  bool isSearching = false;
+
+  @override
+  void initState() {
+    super.initState();
+    selectedStatus = widget.initialStatus;
+    _loadAllServices();
+
+    // NUEVO: Listener para búsqueda en tiempo real
+    _searchController.addListener(() {
+      setState(() {
+        searchQuery = _searchController.text.toLowerCase().trim();
+        isSearching = searchQuery.isNotEmpty;
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  // Reemplaza la función _loadAllServices (líneas aproximadamente 60-120)
+  Future<void> _loadAllServices() async {
+    final session = Provider.of<SessionProvider>(context, listen: false);
+    if (session.ruc == null) return;
+
+    setState(() {
+      isLoadingServices = true;
+      errorMessage = null;
+    });
+
+    try {
+      List<Map<String, dynamic>> allServicesList = [];
+
+      for (String parameter in [
+        'UP',
+        'Power',
+        'Router',
+        'Down',
+        'Lost',
+        'SuspencionBaja',
+        'EnlacesNoGpon',
+      ]) {
+        try {
+          final response = await AcordeonService.getAcordeonData(
+            session.ruc!,
+            parameter,
+          );
+
+          if (response.statusCode == 200) {
+            final dynamic decodedData = jsonDecode(response.body);
+
+            // Manejar tanto respuestas que vienen como List como Map
+            List<dynamic> dataList = [];
+
+            if (decodedData is List) {
+              // Si es una lista, usarla directamente
+              dataList = decodedData;
+            } else if (decodedData is Map) {
+              // Si es un mapa, convertirlo a lista con un solo elemento
+              dataList = [decodedData];
+            } else {
+              // Si no es ni lista ni mapa, log el error y continuar
+              print(
+                'Tipo de datos inesperado para $parameter: ${decodedData.runtimeType}',
+              );
+              continue;
+            }
+
+            for (var item in dataList) {
+              if (item is Map<String, dynamic>) {
+                final rawId = item['idservicio']?.toString() ?? 'Sin ID';
+
+                final alreadyExists = allServicesList.any(
+                  (service) =>
+                      (service['IdServicio']?.toString() ?? '') == rawId,
+                );
+                if (alreadyExists) continue;
+
+                allServicesList.add({
+                  // Claves normalizadas (PascalCase)
+                  'IdServicio': rawId,
+                  // Dirección base y enriquecida
+                  'DireccionOdoo': item['direccionodoo'] ?? 'Sin dirección',
+                  'DistritoOdoo': item['distritoodoo']?.toString(),
+                  'ProvinciaOdoo': item['provinciaodoo']?.toString(),
+                  'DptoOdoo': item['dptoodoo']?.toString(),
+                  'DireccionFull': _composeDireccionCompleta(item),
+
+                  'Latitud': item['latitud'], // ⬅️ nuevo
+                  'Longitud': item['longitud'],
+
+                  'DESDE': item['desde']?.toString() ?? '',
+                  'StatusRPA': item['statusrpa']?.toString() ?? '0',
+                  'StatusOdoo': item['statusodoo'] ?? 'Desconocido',
+                  'Comercial': item['comercial'] ?? 'Sin comercial',
+                  'MedioOdoo': item['medioodoo'] ?? 'Sin medio',
+                  'IpWanOdoo': item['ipwanodoo']?.toString(),
+                  'AtenuacionRPA': item['atenuacionrpa']?.toString(),
+                  'RouterRPA': item['routerrpa']?.toString(),
+                  'SerialRPA': item['serialrpa']?.toString(),
+                  'parameterUsed': parameter,
+                  'details': item, // raw por si acaso
+                });
+              } else {
+                print('Item no es un Map para $parameter: ${item.runtimeType}');
+              }
+            }
+          } else {
+            print('Error HTTP para $parameter: ${response.statusCode}');
+          }
+        } catch (e) {
+          print('Error cargando $parameter: $e');
+          // Continuar con los demás parámetros aunque uno falle
+        }
+      }
+
+      setState(() {
+        allServices = allServicesList;
+        isLoadingServices = false;
+      });
+
+      print('✅ Servicios cargados exitosamente: ${allServicesList.length}');
+
+      // Debug: Mostrar cuántos servicios hay por tipo
+      Map<String, int> servicesByType = {};
+      for (var service in allServicesList) {
+        String type = service['parameterUsed'];
+        servicesByType[type] = (servicesByType[type] ?? 0) + 1;
+      }
+      print('📊 Servicios por tipo: $servicesByType');
+    } catch (e) {
+      setState(() {
+        errorMessage = 'Error al cargar servicios: $e';
+        isLoadingServices = false;
+        allServices = [];
+      });
+      print('❌ Error general cargando servicios: $e');
+    }
+  }
+
+  // NUEVO: Lista filtrada que considera tanto el estado seleccionado como la búsqueda
+  // Reemplaza la función get filteredServices (líneas aproximadamente 110-150)
+  List<Map<String, dynamic>> get filteredServices {
+    List<Map<String, dynamic>> services = allServices;
+
+    if (selectedStatus != null && !isSearching) {
+      // Mapeo oficial de etiquetas válidas (según tu API)
+      const validParams = <String, String>{
+        'UP': 'UP',
+        'POWER': 'Power',
+        'ROUTER': 'Router',
+        'DOWN': 'Down',
+        'LOST': 'Lost',
+        'SUSPENCIONBAJA': 'SuspencionBaja',
+        'ENLACESNOGPON': 'EnlacesNoGpon',
+      };
+
+      // Encontrar la clave real ignorando mayúsculas/minúsculas
+      final keyUpper = selectedStatus!.toUpperCase();
+      String? targetParameter;
+      for (final entry in validParams.entries) {
+        if (entry.key == keyUpper) {
+          targetParameter = entry.value;
+          break;
+        }
+      }
+
+      if (targetParameter != null) {
+        services = services
+            .where((service) => service['parameterUsed'] == targetParameter)
+            .toList();
+      }
+    }
+
+    if (isSearching && searchQuery.isNotEmpty) {
+      services = services.where((service) {
+        final idServicio = (service['IdServicio']?.toString() ?? '')
+            .toLowerCase();
+        final direccion =
+            (service['DireccionFull'] ?? service['DireccionOdoo'] ?? '')
+                .toString()
+                .toLowerCase();
+        final comercial = (service['Comercial']?.toString() ?? '')
+            .toLowerCase();
+
+        // También busca por distrito/provincia/departamento directo
+        final distrito = (service['DistritoOdoo']?.toString() ?? '')
+            .toLowerCase();
+        final provincia = (service['ProvinciaOdoo']?.toString() ?? '')
+            .toLowerCase();
+        final dpto = (service['DptoOdoo']?.toString() ?? '').toLowerCase();
+
+        return idServicio.contains(searchQuery) ||
+            direccion.contains(searchQuery) ||
+            comercial.contains(searchQuery) ||
+            distrito.contains(searchQuery) ||
+            provincia.contains(searchQuery) ||
+            dpto.contains(searchQuery);
+      }).toList();
+    }
+
+    return services;
+  }
+
+  void toggleStatusFilter(String status) {
+    setState(() {
+      if (selectedStatus == status) {
+        selectedStatus = null;
+      } else {
+        selectedStatus = status;
+      }
+      // Limpiar búsqueda al seleccionar estado
+      if (!isSearching) {
+        _searchController.clear();
+      }
+    });
+  }
+
+  // NUEVO: Función para limpiar búsqueda
+  void clearSearch() {
+    setState(() {
+      _searchController.clear();
+      searchQuery = '';
+      isSearching = false;
+    });
+  }
+
+  void navigateToServiceDetail(Map<String, dynamic> serviceData) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ServicioDetailScreen(servicioData: serviceData),
+      ),
+    );
+  }
+
+  String _formatDate(String? dateString) {
+    if (dateString == null || dateString.isEmpty) return '';
+
+    try {
+      if (dateString.length >= 8) {
+        final year = dateString.substring(0, 4);
+        final month = dateString.substring(4, 6);
+        final day = dateString.substring(6, 8);
+        return '$day/$month/$year';
+      }
+    } catch (e) {
+      return dateString;
+    }
+
+    return dateString;
+  }
+
+  Color _getColorForStatusRPA(String parameterUsed) {
+    final graphProv = Provider.of<GraphSocketProvider>(context, listen: false);
+
+    if (graphProv.isConnected &&
+        graphProv.leyenda.isNotEmpty &&
+        graphProv.colors.isNotEmpty) {
+      String? correspondingLegend;
+      switch (parameterUsed) {
+        case 'EnlacesNoGpon':
+          correspondingLegend = 'EnlacesNoGpon';
+          break;
+        case 'UP':
+          correspondingLegend = 'UP';
+          break;
+        case 'Power':
+          correspondingLegend = 'Power';
+          break;
+        case 'Router':
+          correspondingLegend = 'Router';
+          break;
+        case 'Down':
+          correspondingLegend = 'Down';
+          break;
+        case 'SuspencionBaja':
+          correspondingLegend = 'SuspencionBaja';
+          break;
+        case 'Lost':
+          correspondingLegend = 'Lost';
+          break;
+      }
+      if (correspondingLegend != null) {
+        final index = graphProv.leyenda.indexOf(correspondingLegend);
+        if (index >= 0 && index < graphProv.colors.length) {
+          return graphProv.colors[index];
+        }
+      }
+    }
+
+    // fallback si no hay socket
+    switch (parameterUsed) {
+      case 'EnlacesNoGpon':
+        return Colors.blue;
+      case 'UP':
+        return Colors.green;
+      case 'Power':
+        return Colors.orange;
+      case 'Router':
+        return const Color(0xFF8B4A9C);
+      case 'Down':
+        return Colors.red;
+      case 'Lost':
+        return Colors.purple;
+      case 'SuspencionBaja':
+        return Colors.yellow;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final session = Provider.of<SessionProvider>(context);
+
+    if (session.ruc == null) {
+      return Scaffold(
+        backgroundColor: Colors.grey[200],
+        endDrawer: FiberluxDrawer(),
+        body: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 24.0,
+              vertical: 16.0,
+            ),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12.0),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.purple.withOpacity(0.2),
+                  blurRadius: 15.0,
+                  offset: const Offset(0, 5),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.lock_outline,
+                  size: 48.0,
+                  color: Colors.purple,
+                ),
+                const SizedBox(height: 16.0),
+                Text(
+                  'Acceso restringido',
+                  style: TextStyle(
+                    fontSize: 22.0,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.grey[800],
+                  ),
+                ),
+                const SizedBox(height: 8.0),
+                Text(
+                  'Verifica tu cuenta para continuar.',
+                  style: TextStyle(fontSize: 16.0, color: Colors.grey[600]),
+                ),
+                const SizedBox(height: 24.0),
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.pushAndRemoveUntil(
+                      context,
+                      MaterialPageRoute(builder: (_) => const LoginScreen()),
+                      (route) => false,
+                    );
+                  },
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 32.0,
+                      vertical: 12.0,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8.0),
+                    ),
+                  ),
+                  child: const Text(
+                    'Verificar ahora',
+                    style: TextStyle(
+                      fontSize: 16.0,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Scaffold(
+      backgroundColor: Colors.white,
+      endDrawer: FiberluxDrawer(),
+      body: SafeArea(
+        child: Column(
+          children: [
+            _buildHeader(),
+            _buildEntityTitle(),
+            if (!isSearching) ...[_buildStatusCards(), _buildProgressBar()],
+            // ⬇️ aquí
+            Expanded(
+              child: RefreshIndicator(
+                onRefresh: refresh, // usa el método público
+                child: _buildServicesList(),
+              ),
+            ),
+            _buildSearchBar(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    final session = Provider.of<SessionProvider>(context, listen: false);
+    final nombre = session.nombre ?? 'Usuario';
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Image.asset('assets/logos/logo_pequeño.png', height: 40),
+              const SizedBox(width: 12),
+              Text(
+                '¡Hola $nombre!',
+                style: TextStyle(
+                  fontFamily: 'Poppins',
+                  fontSize: 16,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              Stack(
+                alignment: Alignment.center,
+                children: [
+                  IconButton(
+                    icon: Icon(
+                      NotificationOverlay.isShowing
+                          ? Icons.notifications
+                          : Icons.notifications_outlined,
+                      color: Colors.purple,
+                      size: 28,
+                    ),
+                    onPressed: () {
+                      if (NotificationOverlay.isShowing) {
+                        NotificationOverlay.hide();
+                      } else {
+                        NotificationOverlay.show(
+                          context,
+                          onClose: () {
+                            setState(() {
+                              hasNotifications = false;
+                            });
+                          },
+                        );
+                      }
+                    },
+                  ),
+                  if (hasNotifications)
+                    Positioned(
+                      top: 10,
+                      right: 10,
+                      child: Container(
+                        width: 10,
+                        height: 10,
+                        decoration: const BoxDecoration(
+                          color: Colors.red,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              Builder(
+                builder: (context) => IconButton(
+                  icon: const Icon(Icons.menu, color: Colors.purple),
+                  onPressed: () => Scaffold.of(context).openEndDrawer(),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEntityTitle() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      child: Text(
+        'Entidad',
+        style: TextStyle(
+          fontFamily: 'Poppins',
+          fontSize: 25,
+          fontWeight: FontWeight.w600,
+          color: Colors.grey[800],
+        ),
+        textAlign: TextAlign.center,
+      ),
+    );
+  }
+
+  // NUEVO: Barra de búsqueda funcional
+  Widget _buildSearchBar() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            Color(0xFF8B4A9C).withOpacity(0.1),
+            Color(0xFFB565A7).withOpacity(0.05),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(25),
+        boxShadow: [
+          BoxShadow(
+            color: Color(0xFF8B4A9C).withOpacity(0.1),
+            blurRadius: 8,
+            offset: Offset(0, 2),
+          ),
+        ],
+      ),
+      child: TextField(
+        controller: _searchController,
+        style: TextStyle(color: Color(0xFF8B4A9C), fontSize: 16),
+        decoration: InputDecoration(
+          hintText: 'Buscar por ID, dirección o cliente...',
+          hintStyle: TextStyle(
+            color: Color(0xFF8B4A9C).withOpacity(0.6),
+            fontSize: 16,
+          ),
+          prefixIcon: Icon(Icons.search, color: Color(0xFF8B4A9C)),
+          suffixIcon: isSearching
+              ? IconButton(
+                  icon: Icon(Icons.clear, color: Color(0xFF8B4A9C)),
+                  onPressed: clearSearch,
+                )
+              : null,
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 14,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatusCards() {
+    final graphProv = Provider.of<GraphSocketProvider>(context);
+
+    if (!graphProv.isConnected || graphProv.leyenda.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Wrap(
+        spacing: 12,
+        runSpacing: 12,
+        children: List.generate(graphProv.leyenda.length, (index) {
+          final label = graphProv.leyenda[index];
+          final value = graphProv.valores[index].toInt().toString().padLeft(
+            2,
+            '0',
+          );
+          final color = graphProv.colors.isNotEmpty
+              ? graphProv.colors[index % graphProv.colors.length]
+              : Colors.grey;
+          final isSel = selectedStatus == label;
+
+          return Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: () => toggleStatusFilter(label),
+              child: Container(
+                width: MediaQuery.of(context).size.width * 0.42,
+                padding: const EdgeInsets.symmetric(
+                  vertical: 16,
+                  horizontal: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: isSel
+                      ? color.withOpacity(0.3)
+                      : color.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: isSel ? color : color.withOpacity(0.5),
+                    width: 2,
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Text(
+                      value,
+                      style: TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold,
+                        color: isSel ? color : color.withOpacity(0.8),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      label,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: isSel ? color : color.withOpacity(0.8),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }),
+      ),
+    );
+  }
+
+  Widget _buildProgressBar() {
+    final graphProv = Provider.of<GraphSocketProvider>(context);
+
+    if (!graphProv.isConnected ||
+        graphProv.leyenda.isEmpty ||
+        graphProv.valores.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final total = graphProv.valores.fold<double>(0, (sum, val) => sum + val);
+    if (total <= 0) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: List.generate(graphProv.leyenda.length, (index) {
+          final valor = graphProv.valores[index];
+          final leyenda = graphProv.leyenda[index];
+          final color = graphProv.colors.isNotEmpty
+              ? graphProv.colors[index % graphProv.colors.length]
+              : Colors.grey;
+          final percent = (valor / total) * 100;
+          final isSelected = selectedStatus == leyenda;
+
+          if (valor <= 0) return const SizedBox.shrink();
+
+          // CLAVE: Ancho mínimo + proporcional balanceado
+          // Cada barra tiene un "peso base" de 10 + su porcentaje real
+          // Esto garantiza que todos sean visibles pero mantengan proporción
+          final flexWeight = (10 + percent).toInt(); // Mínimo 10 + porcentaje
+
+          return Expanded(
+            flex: flexWeight,
+            child: Container(
+              margin: EdgeInsets.only(
+                right: index < graphProv.leyenda.length - 1 ? 5 : 0,
+              ),
+              child: Column(
+                children: [
+                  // Barra rectangular sin bordes redondeados
+                  Container(
+                    height: 10,
+                    width: double.infinity,
+                    color: selectedStatus == null || isSelected
+                        ? color
+                        : Colors.grey[300],
+                  ),
+                  const SizedBox(height: 6),
+                  // Porcentaje debajo
+                  Text(
+                    '${percent.toStringAsFixed(0)}%',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: isSelected ? color : Colors.grey[600],
+                      fontWeight: isSelected
+                          ? FontWeight.bold
+                          : FontWeight.normal,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }).where((widget) => widget is! SizedBox).toList(),
+      ),
+    );
+  }
+
+  Widget _buildServicesList() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.05), spreadRadius: 0),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Stack(
+          children: [
+            Positioned.fill(child: _buildServicesContent()),
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              height: 20,
+              child: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.purple.withOpacity(0.08),
+                      Colors.purple.withOpacity(0.04),
+                      Colors.transparent,
+                    ],
+                    stops: const [0.0, 0.4, 1.0],
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              height: 20,
+              child: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                    colors: [
+                      Colors.purple.withOpacity(0.08),
+                      Colors.purple.withOpacity(0.04),
+                      Colors.transparent,
+                    ],
+                    stops: const [0.0, 0.4, 1.0],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildServicesContent() {
+    if (isLoadingServices) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(color: Color(0xFF8B4A9C)),
+            const SizedBox(height: 16),
+            Text(
+              'Cargando servicios...',
+              style: TextStyle(fontSize: 16, color: Colors.grey[600]),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (errorMessage != null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error_outline, size: 48, color: Colors.red[400]),
+            const SizedBox(height: 16),
+            Text(
+              errorMessage!,
+              style: TextStyle(fontSize: 16, color: Colors.red[600]),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () => _loadAllServices(),
+              child: Text('Reintentar'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final services = filteredServices;
+
+    if (services.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              isSearching ? Icons.search_off : Icons.inbox_outlined,
+              size: 48,
+              color: Colors.grey[400],
+            ),
+            const SizedBox(height: 16),
+            Text(
+              isSearching
+                  ? 'No se encontraron resultados para "$searchQuery"'
+                  : selectedStatus == null
+                  ? 'No hay servicios disponibles'
+                  : 'No hay servicios con el estado "$selectedStatus"',
+              style: TextStyle(
+                fontSize: 16,
+                color: Colors.grey[600],
+                fontStyle: FontStyle.italic,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            Text(
+              'Total servicios: ${allServices.length}',
+              style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+            ),
+            const SizedBox(height: 16),
+            if (isSearching)
+              ElevatedButton(
+                onPressed: clearSearch,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Color(0xFF8B4A9C),
+                ),
+                child: Text(
+                  'Limpiar búsqueda',
+                  style: TextStyle(color: Colors.white),
+                ),
+              )
+            else if (selectedStatus != null)
+              ElevatedButton(
+                onPressed: () => setState(() => selectedStatus = null),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Color(0xFF8B4A9C),
+                ),
+                child: Text(
+                  'Mostrar todos',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        // NUEVO: Header con resultados de búsqueda
+        if (isSearching)
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Color(0xFF8B4A9C).withOpacity(0.1),
+              border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.search, color: Color(0xFF8B4A9C), size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${services.length} resultado${services.length != 1 ? 's' : ''} para "$searchQuery"',
+                    style: TextStyle(
+                      color: Color(0xFF8B4A9C),
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: clearSearch,
+                  child: Text(
+                    'Limpiar',
+                    style: TextStyle(color: Color(0xFF8B4A9C)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+        Expanded(
+          child: ListView.builder(
+            physics: const BouncingScrollPhysics(),
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            itemCount: services.length,
+            itemBuilder: (context, index) {
+              final service = services[index];
+              final parameterUsed = service['parameterUsed']?.toString() ?? '';
+              final Color serviceColor = _getColorForStatusRPA(parameterUsed);
+              final formattedDate = _formatDate(service['DESDE']);
+
+              return Padding(
+                padding: const EdgeInsets.symmetric(
+                  vertical: 8,
+                  horizontal: 20,
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: () => navigateToServiceDetail(service),
+                    child: Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: serviceColor.withOpacity(0.2),
+                          width: 1,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: serviceColor.withOpacity(0.1),
+                            blurRadius: 8,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                width: 16,
+                                height: 16,
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    colors: [
+                                      serviceColor,
+                                      serviceColor.withOpacity(0.7),
+                                    ],
+                                  ),
+                                  shape: BoxShape.circle,
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: serviceColor.withOpacity(0.3),
+                                      blurRadius: 4,
+                                      offset: Offset(0, 2),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    // NUEVO: Resaltar texto buscado en ID
+                                    _buildHighlightedText(
+                                      service['IdServicio'] as String,
+                                      searchQuery,
+                                      const TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF8B4A9C),
+                                      ),
+                                    ),
+                                    if (isSearching)
+                                      Text(
+                                        'Tipo: $parameterUsed',
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          color: serviceColor.withOpacity(0.7),
+                                          fontStyle: FontStyle.italic,
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                              if (formattedDate.isNotEmpty)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: serviceColor.withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Text(
+                                    formattedDate,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: serviceColor,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              const SizedBox(width: 8),
+                              Icon(
+                                Icons.chevron_right_rounded,
+                                color: Colors.grey[400],
+                                size: 24,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              const SizedBox(width: 28),
+                              Expanded(
+                                child: Column(
+                                  children: [
+                                    CustomPaint(
+                                      painter: DashedLinePainter(
+                                        color: serviceColor.withOpacity(0.3),
+                                      ),
+                                      child: const SizedBox(
+                                        height: 1,
+                                        width: double.infinity,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: _buildHighlightedText(
+                                        (service['DireccionFull'] ??
+                                                service['DireccionOdoo'] ??
+                                                'Sin dirección')
+                                            as String,
+                                        searchQuery,
+                                        TextStyle(
+                                          fontSize: 14,
+                                          color: Colors.grey[700],
+                                          fontStyle: FontStyle.italic,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  // NUEVO: Widget para resaltar texto buscado
+  Widget _buildHighlightedText(String text, String query, TextStyle style) {
+    if (query.isEmpty || !isSearching) {
+      return Text(
+        text,
+        style: style,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      );
+    }
+
+    final lowerText = text.toLowerCase();
+    final lowerQuery = query.toLowerCase();
+
+    if (!lowerText.contains(lowerQuery)) {
+      return Text(
+        text,
+        style: style,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+      );
+    }
+
+    final startIndex = lowerText.indexOf(lowerQuery);
+    final endIndex = startIndex + query.length;
+
+    return RichText(
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+      text: TextSpan(
+        style: style,
+        children: [
+          TextSpan(text: text.substring(0, startIndex)),
+          TextSpan(
+            text: text.substring(startIndex, endIndex),
+            style: style.copyWith(
+              backgroundColor: Color(0xFF8B4A9C).withOpacity(0.2),
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          TextSpan(text: text.substring(endIndex)),
+        ],
+      ),
+    );
+  }
+}
+
+class ServicioDetailScreen extends StatefulWidget {
+  final Map<String, dynamic> servicioData;
+
+  const ServicioDetailScreen({Key? key, required this.servicioData})
+    : super(key: key);
+
+  @override
+  State<ServicioDetailScreen> createState() => _ServicioDetailScreenState();
+}
+
+class _ServicioDetailScreenState extends State<ServicioDetailScreen> {
+  static const Color primaryPurple = Color(0xFF8B4A9C);
+  static const Color secondaryPurple = Color(0xFFB565A7);
+  static const Color lightPurple = Color(0xFFE8D8F5);
+  static const Color accentPurple = Color(0xFFD4A4E8);
+
+  LatLng? _parseLatLng(Map<String, dynamic> data) {
+    dynamic rawLat = data['Latitud'] ?? data['latitud'];
+    dynamic rawLng = data['Longitud'] ?? data['longitud'];
+
+    // fallback al raw
+    if ((rawLat == null || rawLng == null) && data['details'] is Map) {
+      final det = data['details'] as Map;
+      rawLat ??= det['latitud'];
+      rawLng ??= det['longitud'];
+    }
+
+    // nada que hacer
+    if (rawLat == null || rawLng == null) return null;
+
+    // normalización segura
+    double? lat, lng;
+    try {
+      lat = rawLat is num
+          ? rawLat.toDouble()
+          : double.parse(rawLat.toString().replaceAll(',', '.').trim());
+      lng = rawLng is num
+          ? rawLng.toDouble()
+          : double.parse(rawLng.toString().replaceAll(',', '.').trim());
+    } catch (_) {
+      return null;
+    }
+
+    // validación de rango
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+
+    // opcional: evita (0,0)
+    if (lat == 0 && lng == 0) return null;
+
+    return LatLng(lat, lng);
+  }
+
+  Future<void> _abrirEnMaps(LatLng pos, {String? label}) async {
+    final q = Uri.encodeComponent(
+      '${pos.latitude},${pos.longitude}${label != null ? ' ($label)' : ''}',
+    );
+    final google = Uri.parse(
+      'https://www.google.com/maps/search/?api=1&query=$q',
+    );
+    if (await canLaunchUrl(google)) {
+      await launchUrl(google, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  Color _serviceColorFromParameter(String p) {
+    switch (p) {
+      case 'EnlacesNoGpon':
+        return Colors.blue;
+      case 'UP':
+        return Colors.green;
+      case 'Power':
+        return Colors.orange;
+      case 'Router':
+        return const Color(0xFF8B4A9C);
+      case 'Down':
+        return Colors.red;
+      case 'Lost':
+        return Colors.purple;
+      case 'SuspencionBaja':
+        return Colors.yellow;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  Color _lighten(Color c, [double amount = 0.15]) {
+    final hsl = HSLColor.fromColor(c);
+    final light = (hsl.lightness + amount).clamp(0.0, 1.0);
+    return hsl.withLightness(light).toColor();
+  }
+
+  Color _darken(Color c, [double amount = 0.15]) {
+    final hsl = HSLColor.fromColor(c);
+    final light = (hsl.lightness - amount).clamp(0.0, 1.0);
+    return hsl.withLightness(light).toColor();
+  }
+
+  Color get _serviceColor {
+    final parameter = (widget.servicioData['parameterUsed'] ?? '').toString();
+    return _serviceColorFromParameter(parameter);
+  }
+
+  late final MapController _mapController;
+  late ScrollController _scrollController;
+  double _scrollOffset = 0.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _mapController = MapController();
+    _scrollController = ScrollController();
+    _scrollController.addListener(() {
+      setState(() {
+        _scrollOffset = _scrollController.offset;
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Widget _buildMapaSection() {
+    final pos = _parseLatLng(widget.servicioData);
+
+    if (pos == null) {
+      // No hay coordenadas válidas
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.black12),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.map_outlined, color: Colors.grey),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Sin coordenadas válidas para este servicio',
+                style: TextStyle(color: Colors.grey[700]),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    debugPrint('🗺️ POS=${pos.latitude}, ${pos.longitude}');
+
+    final direccion =
+        (widget.servicioData['DireccionFull'] ??
+                widget.servicioData['DireccionOdoo'] ??
+                '')
+            .toString();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Título sección
+        _buildSectionHeader('Ubicación en mapa', Icons.place),
+
+        // Mapa
+        ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: SizedBox(
+            height: 220,
+
+            child: FlutterMap(
+              mapController: _mapController, // ⬅️ NUEVO
+              options: MapOptions(
+                initialCenter: pos,
+                initialZoom: 17,
+                // ⬅️ Forzamos un move cuando el mapa está listo (dispara carga de tiles)
+                onMapReady: () {
+                  // Si por algún motivo no pintó con initial*, movemos explícitamente
+                  _mapController.move(pos, 17);
+                },
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  userAgentPackageName: 'com.fiberlux.app',
+                  tileProvider: NetworkTileProvider(),
+                  errorTileCallback: (t, e, _) => debugPrint('OSM error: $e'),
+                ),
+
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: pos,
+                      width: 40,
+                      height: 40,
+                      child: const Icon(
+                        Icons.location_on,
+                        size: 40,
+                        color: Colors.red,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+
+        const SizedBox(height: 8),
+
+        // Acciones
+        Row(
+          children: [
+            ElevatedButton.icon(
+              onPressed: () => _abrirEnMaps(
+                pos,
+                label: widget.servicioData['IdServicio']?.toString(),
+              ),
+              icon: const Icon(Icons.open_in_new),
+              label: const Text('Abrir en Google Maps'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.black87,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                direccion.isEmpty
+                    ? '${pos.latitude.toStringAsFixed(6)}, ${pos.longitude.toStringAsFixed(6)}'
+                    : direccion,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: Colors.grey[700]),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSideStatusCard(String status, String type) {
+    Color statusColor;
+    IconData statusIcon;
+
+    if (status.toLowerCase() == 'Activo' ||
+        status.toLowerCase() == 'power' ||
+        status.toLowerCase() == 'up') {
+      statusColor = Color(0xFF4CAF50);
+      statusIcon = Icons.check_circle_rounded;
+    } else {
+      statusColor = Color(0xFFE53935);
+      statusIcon = Icons.error_rounded;
+    }
+
+    return Container(
+      width: 85, // Ancho fijo para evitar overflow
+      padding: EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.95),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: statusColor.withOpacity(0.3), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: statusColor.withOpacity(0.15),
+            blurRadius: 8,
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(statusIcon, color: statusColor, size: 18),
+          SizedBox(height: 6),
+          Text(
+            type.replaceAll('Estado ', ''),
+            style: TextStyle(
+              fontSize: 9,
+              color: Colors.grey[600],
+              fontWeight: FontWeight.w600,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          SizedBox(height: 2),
+          Text(
+            status,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              color: statusColor,
+            ),
+            textAlign: TextAlign.center,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoTile(String title, String? value, IconData icon) {
+    return Container(
+      margin: EdgeInsets.only(bottom: 14),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('$title: ${value ?? 'N/A'}'),
+                duration: Duration(milliseconds: 800),
+                backgroundColor: primaryPurple,
+                behavior: SnackBarBehavior.floating,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            );
+          },
+          child: Container(
+            padding: EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: lightPurple.withOpacity(0.3), width: 1),
+              boxShadow: [
+                BoxShadow(
+                  color: primaryPurple.withOpacity(0.06),
+                  blurRadius: 10,
+                  offset: Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        lightPurple.withOpacity(0.8),
+                        accentPurple.withOpacity(0.6),
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: [
+                      BoxShadow(
+                        color: primaryPurple.withOpacity(0.2),
+                        blurRadius: 4,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Icon(icon, color: primaryPurple, size: 22),
+                ),
+                SizedBox(width: 18),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.grey[600],
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                      SizedBox(height: 4),
+                      Text(
+                        value ?? 'N/A',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.grey[800],
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  color: Colors.grey[400],
+                  size: 20,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader(String title, IconData icon) {
+    return Container(
+      margin: EdgeInsets.symmetric(vertical: 20),
+      padding: EdgeInsets.symmetric(horizontal: 4),
+      child: Row(
+        children: [
+          Container(
+            padding: EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [primaryPurple, secondaryPurple],
+              ),
+              borderRadius: BorderRadius.circular(10),
+              boxShadow: [
+                BoxShadow(
+                  color: primaryPurple.withOpacity(0.3),
+                  blurRadius: 8,
+                  offset: Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Icon(icon, color: Colors.white, size: 20),
+          ),
+          SizedBox(width: 16),
+          Expanded(
+            child: Text(
+              title,
+              style: TextStyle(
+                fontSize: 19,
+                fontWeight: FontWeight.bold,
+                color: primaryPurple,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Calcular el factor de animación basado en el scroll
+    double maxScroll = 200.0; // Distancia máxima para la animación
+    double animationFactor = (_scrollOffset / maxScroll).clamp(0.0, 1.0);
+    final Color serviceColor = _serviceColor;
+    final Color appBarSolid = _darken(serviceColor, 0.10);
+
+    return Scaffold(
+      backgroundColor: Color(0xFFF8F9FA),
+      body: CustomScrollView(
+        controller: _scrollController,
+        slivers: [
+          // Header con gradiente púrpura
+          SliverAppBar(
+            expandedHeight: 280,
+            floating: false,
+            pinned: true,
+            backgroundColor: appBarSolid,
+
+            title: AnimatedOpacity(
+              opacity: animationFactor > 0.8
+                  ? 1.0
+                  : 0.0, // Aparece cuando está cerca del final
+              duration: Duration(milliseconds: 200),
+              child: Text(
+                '${widget.servicioData['IdServicio'] ?? widget.servicioData['idservicio'] ?? 'N/A'}',
+
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            leading: IconButton(
+              onPressed: () => Navigator.pop(context),
+              icon: Icon(
+                Icons.arrow_back_ios_rounded,
+                color: Colors.white,
+                size: 24,
+              ),
+              style: IconButton.styleFrom(
+                backgroundColor: Colors.white.withOpacity(0.2),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+            flexibleSpace: FlexibleSpaceBar(
+              background: Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      _darken(serviceColor, 0.15), // esquina más oscura
+                      serviceColor, // base
+                      _lighten(serviceColor, 0.15), // toque claro
+                    ],
+                    stops: [0.0, 0.6, 1.0],
+                  ),
+                ),
+                child: SafeArea(
+                  child: Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        SizedBox(height: 40),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            // Espacio izquierdo
+                            Expanded(flex: 1, child: SizedBox()),
+
+                            // Servicio centrado con animación
+                            Expanded(
+                              flex: 2,
+                              child: Column(
+                                children: [
+                                  AnimatedContainer(
+                                    duration: Duration(milliseconds: 1000),
+                                    curve: Curves.easeInOut,
+                                    padding: EdgeInsets.all(20),
+                                    decoration: BoxDecoration(
+                                      gradient: LinearGradient(
+                                        begin: Alignment.topLeft,
+                                        end: Alignment.bottomRight,
+                                        colors: [
+                                          Colors.white.withOpacity(0.25),
+                                          Colors.white.withOpacity(0.15),
+                                        ],
+                                      ),
+                                      borderRadius: BorderRadius.circular(20),
+                                      border: Border.all(
+                                        color: Colors.white.withOpacity(0.3),
+                                        width: 1.5,
+                                      ),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withOpacity(0.1),
+                                          blurRadius: 20,
+                                          offset: Offset(0, 10),
+                                        ),
+                                      ],
+                                    ),
+                                    child: Icon(
+                                      Icons.router_rounded,
+                                      size: 52,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                  SizedBox(height: 16),
+                                  AnimatedOpacity(
+                                    opacity: 1.0 - (animationFactor * 0.7),
+                                    duration: Duration(milliseconds: 100),
+                                    child: Text(
+                                      'Servicio',
+                                      style: TextStyle(
+                                        color: Colors.white.withOpacity(0.9),
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ),
+                                  // IdServicio con animación completa - SE OCULTA AL FINAL
+                                  AnimatedOpacity(
+                                    opacity: animationFactor > 0.8
+                                        ? 0.0
+                                        : 1.0, // Se oculta cuando llega al AppBar
+                                    duration: Duration(milliseconds: 200),
+                                    child: Transform.translate(
+                                      offset: Offset(
+                                        -animationFactor *
+                                            80, // Movimiento hacia la posición del título
+                                        -animationFactor *
+                                            140, // Movimiento hacia la altura del AppBar
+                                      ),
+                                      child: AnimatedDefaultTextStyle(
+                                        duration: Duration(milliseconds: 100),
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize:
+                                              28 -
+                                              (animationFactor *
+                                                  10), // 28px -> 18px
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                        child: Text(
+                                          widget.servicioData['IdServicio'] ??
+                                              'N/A',
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            // Tarjetas de estado compactas
+                            Expanded(
+                              flex: 1,
+                              child: Column(
+                                children: [
+                                  _buildSideStatusCard(
+                                    widget.servicioData['StatusOdoo'] ?? 'N/A',
+                                    'Estado Odoo',
+                                  ),
+                                  SizedBox(height: 10),
+                                  _buildSideStatusCard(
+                                    widget.servicioData['StatusRPA'] ?? 'N/A',
+                                    'Estado RPA',
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // Contenido principal
+          SliverToBoxAdapter(
+            child: Container(
+              padding: EdgeInsets.fromLTRB(24, 24, 24, 24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildInfoTile(
+                    'Comercial',
+                    widget.servicioData['Comercial'],
+                    Icons.person,
+                  ),
+                  _buildInfoTile(
+                    'Dirección',
+                    widget.servicioData['DireccionOdoo'],
+                    Icons.location_on,
+                  ),
+                  _buildInfoTile(
+                    'Ubicación',
+                    [
+                          widget.servicioData['DistritoOdoo'],
+                          widget.servicioData['ProvinciaOdoo'],
+                          widget.servicioData['DptoOdoo'],
+                        ]
+                        .where(
+                          (e) => (e?.toString().trim().isNotEmpty ?? false),
+                        )
+                        .join(' - '),
+                    Icons.map,
+                  ),
+                  const SizedBox(height: 8),
+
+                  _buildMapaSection(), // ⬅️ AQUI
+
+                  _buildInfoTile(
+                    'IP WAN',
+                    widget.servicioData['IpWanOdoo'],
+                    Icons.public,
+                  ),
+                  _buildInfoTile(
+                    'Medio',
+                    widget.servicioData['MedioOdoo'],
+                    Icons.cable,
+                  ),
+                  _buildSectionHeader('Detalles Técnicos', Icons.build),
+                  _buildInfoTile(
+                    'Atenuación',
+                    widget.servicioData['AtenuacionRPA'],
+                    Icons.signal_cellular_alt,
+                  ),
+                  _buildInfoTile(
+                    'Router',
+                    widget.servicioData['RouterRPA'],
+                    Icons.wifi,
+                  ),
+                  _buildInfoTile(
+                    'Serial',
+                    widget.servicioData['SerialRPA'],
+                    Icons.qr_code,
+                  ),
+                  _buildInfoTile(
+                    'Activo desde',
+                    widget.servicioData['DESDE'],
+                    Icons.schedule,
+                  ),
+                  SizedBox(height: 32),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class DashedLinePainter extends CustomPainter {
+  final Color color;
+  DashedLinePainter({required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Paint paint = Paint()
+      ..color = color
+      ..strokeWidth = 1.0
+      ..style = PaintingStyle.stroke;
+    const double dashWidth = 4;
+    const double dashSpace = 4;
+    double startX = 0;
+    while (startX < size.width) {
+      canvas.drawLine(
+        Offset(startX, size.height / 2),
+        Offset(startX + dashWidth, size.height / 2),
+        paint,
+      );
+      startX += dashWidth + dashSpace;
+    }
+  }
+
+  @override
+  bool shouldRepaint(CustomPainter oldDelegate) => false;
+}

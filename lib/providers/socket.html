@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Visualizador de Gráfica por RUC</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        padding: 30px;
+        background-color: #f5f5f5;
+      }
+
+      h1 {
+        text-align: center;
+      }
+
+      #formRUC,
+      #graficoContainer {
+        background: #fff;
+        padding: 20px;
+        border-radius: 8px;
+        max-width: 500px;
+        margin: 0 auto 20px auto;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+      }
+
+      input,
+      button {
+        padding: 10px;
+        width: 100%;
+        margin-top: 10px;
+        font-size: 16px;
+      }
+
+      canvas {
+        display: block;
+        margin: 20px auto;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>📊 Monitoreo por RUC</h1>
+
+    <div id="formRUC">
+      <label for="rucInput">🔐 Ingresa tu RUC:</label>
+      <input type="text" id="rucInput" placeholder="Ej: 20601543210" />
+      <button onclick="conectarsePorRUC()">Conectarse y visualizar</button>
+    </div>
+
+    <div id="graficoContainer" style="display: none">
+      <canvas id="graficoDona" width="400" height="400"></canvas>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+      let socket;
+      let grafico;
+      let rucActual = null;
+
+      function conectarsePorRUC() {
+        const nuevoRUC = document.getElementById("rucInput").value.trim();
+
+        if (!nuevoRUC) {
+          alert("Por favor, ingresa un RUC válido.");
+          return;
+        }
+
+        // Mostrar contenedor de gráfico
+        document.getElementById("graficoContainer").style.display = "block";
+
+        // Destruir gráfico anterior si existe
+        if (grafico) {
+          grafico.destroy();
+          grafico = null;
+        }
+
+        // Cerrar socket anterior si ya estaba conectado
+        if (socket && socket.connected) {
+          socket.disconnect();
+        }
+
+        rucActual = rucInput.value.trim();
+        console.log("🔐 Conectando al RUC:", rucActual);
+
+        socket = io("http://200.1.179.157:3000", {
+          transports: ["websocket"],
+        });
+
+        socket.on("connect", () => {
+          console.log("✅ Conectado al servidor WS");
+          socket.emit("joinRoom", { ruc: rucActual, alias: rucActual });
+        });
+
+        socket.on("grafica", (data) => {
+          if (data.ruc !== rucActual) {
+            console.warn("⚠️ Ignorado evento para otro RUC:", data.ruc);
+            return;
+          }
+
+          console.log("📥 Recibido evento grafica:", data);
+
+          const valores = data.valores || [];
+          const etiquetas = data.leyenda || [];
+          const titulo = data.msg || [];
+
+          const ctx = document.getElementById("graficoDona").getContext("2d");
+          // Plugin para mostrar el total al centro
+          const centerTextPlugin = {
+            id: "centerText",
+            beforeDraw: function (chart) {
+              const { width } = chart;
+              const { height } = chart;
+              const { ctx } = chart;
+
+              const dataset = chart.data.datasets[0];
+              const total = dataset.data.reduce((sum, value) => sum + value, 0);
+
+              ctx.save();
+              ctx.font = "bold 18px Arial";
+              ctx.fillStyle = "#444";
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.fillText(` ${total}`, width / 2, height / 2);
+              ctx.restore();
+            },
+          };
+
+          // Destruir gráfico si ya existía
+          if (grafico) grafico.destroy();
+
+          // Crear nueva gráfica
+          grafico = new Chart(ctx, {
+            type: "doughnut",
+            data: {
+              labels: etiquetas,
+              datasets: [
+                {
+                  data: valores,
+                  backgroundColor: [
+                    "black",
+                    "red",
+                    "orange",
+                    "pink",
+                    "purple",
+                    "yellow",
+                    "green",
+                  ],
+                },
+              ],
+            },
+            options: {
+              responsive: true,
+              plugins: {
+                title: {
+                  display: true,
+                  text: `RUC: ${data.ruc} - ${titulo}`,
+                },
+                legend: {
+                  position: "bottom",
+                  labels: {
+                    filter: function (legendItem, chartData) {
+                      const valor =
+                        chartData.datasets[0].data[legendItem.index];
+                      return valor !== 0;
+                    },
+                    generateLabels: function (chart) {
+                      const original =
+                        Chart.overrides.doughnut.plugins.legend.labels
+                          .generateLabels;
+                      const labels = original(chart);
+                      return labels.map((label) => {
+                        const value = chart.data.datasets[0].data[label.index];
+                        return {
+                          ...label,
+                          hidden: value === 0,
+                          text: value === 0 ? "" : label.text,
+                        };
+                      });
+                    },
+                  },
+                },
+              },
+            },
+            plugins: [centerTextPlugin],
+          });
+        });
+        socket.on("disconnect", () => {
+          console.warn("❌ Desconectado del servidor");
+        });
+      }
+    </script>
+  </body>
+</html>

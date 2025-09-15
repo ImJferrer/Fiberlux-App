@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "576974330894",
+    "project_id": "app-fiberlux",
+    "storage_bucket": "app-fiberlux.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:576974330894:android:1432136c52143579ebf05f",
+        "android_client_info": {
+          "package_name": "com.fiberlux.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "576974330894-62hv30vck1pjd627397qkgr4cc4sou6u.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.fiberlux.app",
+            "certificate_hash": "fd588f7558566fb0e986c5fe15d1c422a9ff85b5"
+          }
+        },
+        {
+          "client_id": "576974330894-33j6gb13nlurontc06jmk8l85usja39r.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA9OcNyPEDoxWU68vXD4DvuDd75j6hU7zA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "576974330894-33j6gb13nlurontc06jmk8l85usja39r.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
