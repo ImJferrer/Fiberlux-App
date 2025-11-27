@@ -1,58 +1,188 @@
 import 'dart:async';
-import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:socket_io_client/socket_io_client.dart' as IO;
 
 class GraphSocketProvider extends ChangeNotifier {
   IO.Socket? _socket;
   String? _currentRuc;
+  String? _currentGrupo;
+  bool _usingGroup = false;
   bool _isConnected = false;
   bool _isConnecting = false;
-  Timer? _reconnectTimer;
+  void Function(String)?
+  onGroupResolved; // callback opcional para persistir grupo
+  String? _lastGroupPersisted; // evita notificar repetido
+
+  Completer<void>? _connCompleter;
+  Map<String, dynamic>? _queuedPedir;
 
   // === Estado de conexión ===
   bool get isConnected => _isConnected;
   bool get isConnecting => _isConnecting;
   String? get ruc => _currentRuc;
+  String? get grupo => _currentGrupo;
+  bool get usingGroup => _usingGroup;
+  String? selectedGroupRuc;
 
-  // === Datos principales para UI ===
+  // === Datos de gráfica ===
   List<double> valores = [];
   List<String> leyenda = [];
   List<String> _rawColors = [];
   List<Color> colors = [];
+  List<String> get rawColors => _rawColors;
 
-  // === Otros campos del payload ===
+  // === Datos del payload ===
   Map<String, dynamic> grafica = {};
   Map<String, dynamic> resumen = {};
-  Map<String, dynamic> detalle = {}; // soporta el bloque "Detalle" (mapa)
+  Map<String, dynamic> detalle = {};
   Map<String, dynamic> acordeon = {};
-  dynamic afectados; // puede ser lista/map/número/etc.
+  dynamic afectados;
+  Map<String, dynamic> extra = const {};
   String msg = '';
   String fecha = '';
   String alias = 'APPFiberlux';
 
-  // Eventos auxiliares
-  List<String> miembrosSala = const [];
-  Map<String, dynamic> extra = const {};
+  // === Colores por nombre ===
+  Map<String, Color> _colorsByName = {};
+  Map<String, String> _rawColorMap = {};
+  Map<String, String> get rawColorMap => Map.unmodifiable(_rawColorMap);
+  String _normKey(String s) =>
+      s.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9_]'), '');
+  Color? colorOf(String label) => _colorsByName[_normKey(label)];
 
-  // Exponer colors crudos si la UI los quiere enviar al backend
-  List<String> get rawColors => _rawColors;
+  // === Soporte de grupo: lista de RUCs y razones sociales ===
+  List<String> _groupRucs = [];
+  Map<String, String> _groupRucNombre = {}; // ruc -> razón social
 
-  // Helpers
+  List<String> get groupRucs => List.unmodifiable(_groupRucs);
+
+  List<Map<String, String>> get rucsRazonesList {
+    final out = <Map<String, String>>[];
+    if (_groupRucs.isNotEmpty) {
+      for (final r in _groupRucs) {
+        final nombre = _groupRucNombre[r]?.trim();
+        out.add({
+          'ruc': r,
+          'nombre': (nombre == null || nombre.isEmpty) ? r : nombre,
+        });
+      }
+    } else if (_groupRucNombre.isNotEmpty) {
+      _groupRucNombre.forEach((r, n) {
+        out.add({'ruc': r, 'nombre': (n.isEmpty) ? r : n});
+      });
+    }
+    out.sort(
+      (a, b) =>
+          a['nombre']!.toLowerCase().compareTo(b['nombre']!.toLowerCase()),
+    );
+    return out;
+  }
+
+  void clearSelectedGroupRuc() {
+    selectedGroupRuc = null;
+    notifyListeners();
+  }
+
+  String? get currentGroupName {
+    final r = resumen;
+    final v =
+        r['GRUPO_ECONOMICO'] ??
+        r['Grupo_Empresarial'] ??
+        r['GRUPO'] ??
+        r['Grupo'] ??
+        r['grupo'] ??
+        r['grupo_empresarial'];
+    final s = v?.toString().trim();
+    return (s == null || s.isEmpty) ? null : s;
+  }
+
   int get totalServicios => valores.fold<int>(0, (a, b) => a + b.toInt());
   T? resumenField<T>(String k) => (resumen[k] is T) ? resumen[k] as T : null;
 
-  // ========= Helpers de color =========
-  String _cleanHex(String input) {
-    return input
-        .toLowerCase()
-        .replaceAll('#', '')
-        .replaceAll(RegExp(r'^0x'), '');
+  Map<String, dynamic> _asMapDeep(dynamic v) {
+    if (v is Map) return Map<String, dynamic>.from(v);
+    if (v is String) {
+      final s = v.trim();
+      if (s.isNotEmpty && (s.startsWith('{') || s.startsWith('['))) {
+        try {
+          final dec = jsonDecode(s);
+          if (dec is Map) return Map<String, dynamic>.from(dec);
+        } catch (_) {}
+      }
+    }
+    return <String, dynamic>{};
   }
+
+  String _roomFromGroup(String g) =>
+      g.trim().replaceAll(RegExp(r'\s+'), '_').toUpperCase();
+
+  // ===== Cambiar modo y reconectar automáticamente =====
+  Future<void> switchMode({
+    required bool useGroup,
+    String? groupName, // si no lo pasas, intenta inferirlo del resumen
+    String? ruc, // si no lo pasas, usa el actual / sesión
+  }) async {
+    if (useGroup) {
+      final g = (groupName ?? currentGroupName ?? _currentGrupo)
+          ?.toString()
+          .trim();
+      if (g == null || g.isEmpty) {
+        debugPrint('⚠️ switchMode → grupo vacío; no reconecto');
+        _usingGroup = true;
+        notifyListeners();
+        return;
+      }
+      await _connectInternal(ruc: null, grupo: g, colores: _rawColors);
+      try {
+        await waitUntilConnected();
+        // Pedimos el índice/summary del grupo apenas conecte
+        await fetchGroupSummary(g);
+      } catch (_) {}
+    } else {
+      final r = (ruc ?? _currentRuc)?.toString().trim();
+      if (r == null || r.isEmpty) {
+        debugPrint('⚠️ switchMode → RUC vacío; no reconecto');
+        _usingGroup = false;
+        notifyListeners();
+        return;
+      }
+      await _connectInternal(ruc: r, grupo: null, colores: _rawColors);
+      try {
+        await waitUntilConnected();
+        requestGraphData(r);
+      } catch (_) {}
+    }
+  }
+
+  // ===== fetchGroupSummary ahora infiere grupo si _currentGrupo está vacío =====
+  Future<void> fetchGroupSummary([String? forceGrupo]) async {
+    String? g = (forceGrupo ?? _currentGrupo)?.toString();
+    // 👇 nuevo: si estás en modo grupo pero no hay _currentGrupo, usa el nombre del resumen
+    if ((g == null || g.isEmpty) && _usingGroup) {
+      final cg = currentGroupName;
+      if (cg != null && cg.isNotEmpty) g = cg;
+    }
+    if (g == null || g.isEmpty) return;
+
+    final payload = {'alias': 'PRTG', 'GRUPO': g, 'ruc': _roomFromGroup(g)};
+    if (_socket == null || !_isConnected) {
+      _queuedPedir = payload;
+      debugPrint('⏳ No conectado. Encolando índice de grupo: $payload');
+      return;
+    }
+    debugPrint('📬 PedirGrafica (índice grupo): $payload');
+    _socket!.emit('PedirGrafica', payload);
+  }
+
+  // ========= Color parsing =========
+  String _cleanHex(String input) =>
+      input.toLowerCase().replaceAll('#', '').replaceAll(RegExp(r'^0x'), '');
 
   Color _parseColorString(String raw) {
     final s = raw.trim().toLowerCase();
     final clean = _cleanHex(s);
-
     if (RegExp(r'^[0-9a-f]{6,8}$').hasMatch(clean)) {
       final hexValue = clean.length == 6 ? 'ff$clean' : clean;
       return Color(int.parse(hexValue, radix: 16));
@@ -71,174 +201,383 @@ class GraphSocketProvider extends ChangeNotifier {
       case 'yellow':
         return Colors.yellow;
       case 'pink':
-        return Colors.pink.shade100;
+        return Colors.pink;
       default:
-        return Colors.grey;
+        final hue = raw.hashCode % 360;
+        return HSLColor.fromAHSL(1, hue.toDouble(), .65, .45).toColor();
     }
   }
 
+  // === Contactos fijos (persisten aunque cambies a modo grupo) ===
+  final Map<String, dynamic> _contactosFijos = {};
+  Map<String, dynamic> get contactosFijos => Map.unmodifiable(_contactosFijos);
+
+  Map<String, dynamic> get resumenConContactos {
+    final m = <String, dynamic>{};
+    m.addAll(resumen); // lo último recibido del WS
+    // Sobrescribe con lo fijo (si hay valor no vacío)
+    _contactosFijos.forEach((k, v) {
+      if (v != null && v.toString().trim().isNotEmpty) m[k] = v;
+    });
+    return m;
+  }
+
+  void _cachearContactosDesdeResumen(Map<String, dynamic> res) {
+    const keys = [
+      // Comercial
+      'Comercial',
+      'comercial',
+      'CorreoComercial',
+      'correo_comercial',
+      'Comercial_Correo',
+      'Comercial_Movil',
+      'ComercialTelefono',
+      'Comercial_Telefono',
+      'ComercialCelular',
+      // Cobranzas
+      'Cobranza',
+      'cobranza',
+      'CorreoCobranza',
+      'cobranza_correo',
+      'Cobranza_Correo',
+      'Cobranza_Movil',
+      'CobranzaTelefono',
+      'Cobranza_Telefono',
+      'CobranzaCelular',
+      // NOC
+      'NOC',
+      'noc',
+      'CorreoNOC',
+      'NOC_Correo',
+      'noc_correo',
+      'NOC_Movil',
+      'NOC_Telefono',
+      // SOC
+      'SOC',
+      'soc',
+      'CorreoSOC',
+      'SOC_Correo',
+      'soc_correo',
+      'SOC_Movil',
+      'SOC_Telefono',
+    ];
+    for (final k in keys) {
+      final v = res[k] ?? res[k.toLowerCase()] ?? res[k.toUpperCase()];
+      if (v != null && v.toString().trim().isNotEmpty) {
+        _contactosFijos[k] = v;
+      }
+    }
+  }
+
+  // (opcional, por si alguna vez quieres limpiarlos manualmente)
+  void clearContactosFijos() => _contactosFijos.clear();
+
+  // ======== COLORES DENTRO DE LOS DETALLES DE SERVICIOS ========
+
   Color _colorForStatusName(String name) {
-    final u = name.toUpperCase();
+    final u = _normKey(name);
     switch (u) {
       case 'UP':
         return Colors.green;
-      case 'DOWN':
-        return Colors.red;
       case 'POWER':
+      case 'ENERGIA':
+      case 'PE_ENERGIA':
+      case 'PEENERGIA':
         return Colors.orange;
+      case 'PE_FIBRA':
+      case 'PEFIBRA':
+      case 'ONULOS':
+      case 'ONU_LOS':
+      case 'ONULOSALARM':
+      case 'OLTLOS':
+      case 'OLT_LOS':
+      case 'LOST':
+        return Colors.indigo;
+      case 'EN_ATENCION':
+      case 'ENATENCION':
+        return Colors.orangeAccent;
+      case 'EN_DIAGNOSTICO':
+      case 'ENDIAGNOSTICO':
+        return Colors.deepPurple;
+      case 'DOWN':
+      case 'down':
+        return Colors.red;
       case 'ROUTER':
         return const Color(0xFF8B4A9C);
-      case 'LOST':
-        return Colors.purple;
-      case 'SUSPENCIONBAJA':
-        return Colors.yellow;
       case 'ENLACESNOGPON':
-        return Colors.blue;
-      case 'ONULOS':
-        return Colors.pink;
-      case 'OLTLOS':
-        return Colors.teal;
+      case 'NOGPON':
+        return Colors.blueGrey;
       case 'ALARMASACEPTADAS':
         return Colors.indigo;
+      case 'OBS':
+        return Colors.cyan;
       default:
-        return Colors.grey;
+        final hue = name.hashCode % 360;
+        return HSLColor.fromAHSL(1, hue.toDouble(), .65, .45).toColor();
     }
   }
 
-  // ========= Limpiar Data =========
-  void clearData() {
-    valores = [];
-    leyenda = [];
-    colors = [];
-    _rawColors = [];
-    msg = '';
-    fecha = '';
-    alias = 'APPFiberlux';
-    resumen = {};
-    detalle = {};
-    acordeon = {};
-    afectados = null;
-    miembrosSala = const [];
-    extra = const {};
-    _currentRuc = null;
-    notifyListeners();
-    debugPrint('🧹 Limpieza completa del GraphSocketProvider');
-  }
-
-  // ========= Conexión =========
-
-  void applyPayload(Map<String, dynamic> data) {
-    grafica = (data['Grafica'] is Map)
-        ? Map<String, dynamic>.from(data['Grafica'])
-        : {};
-    detalle = (data['Detalle'] is Map)
-        ? Map<String, dynamic>.from(data['Detalle'])
-        : {};
-    acordeon = (data['Acordeon'] is Map)
-        ? Map<String, dynamic>.from(data['Acordeon'])
-        : {};
-
-    notifyListeners();
-  }
-
+  // ========= Conectar =========
   Future<void> connect(String ruc, [List<String> colores = const []]) async {
+    // ⛔️ No mutar estado aquí. Delega todo a _connectInternal.
+    await _connectInternal(ruc: ruc, grupo: null, colores: colores);
+    try {
+      await waitUntilConnected();
+    } catch (_) {}
+  }
+
+  Future<void> connectByGroup(
+    String grupo, [
+    List<String> colores = const [],
+  ]) async {
+    // ⛔️ No mutar estado aquí. Delega todo a _connectInternal.
+    await _connectInternal(ruc: null, grupo: grupo, colores: colores);
+    try {
+      await waitUntilConnected();
+    } catch (_) {}
+  }
+
+  Future<void> waitUntilConnected({
+    Duration timeout = const Duration(seconds: 6),
+  }) async {
+    if (_isConnected) return;
+    final c = _connCompleter;
+    if (c != null) {
+      await c.future.timeout(timeout);
+    }
+  }
+
+  Future<void> _connectInternal({
+    String? ruc,
+    String? grupo,
+    List<String> colores = const [],
+  }) async {
     _rawColors = List<String>.from(colores);
 
-    if (_isConnected && _currentRuc == ruc) {
-      debugPrint('⏭️ Ya conectado al RUC $ruc');
+    // ---- Snapshot del estado ACTUAL (antes de mutar) ----
+    final currentUsingGroup = _usingGroup;
+    final currentRuc = _currentRuc;
+    final currentGrupo = _currentGrupo;
+
+    // ---- Destino deseado ----
+    final wantUsingGroup = (grupo != null && grupo.isNotEmpty);
+
+    // ¿Estoy ya exactamente en ese destino?
+    final isSameTarget =
+        _isConnected &&
+        currentUsingGroup == wantUsingGroup &&
+        ((wantUsingGroup && currentGrupo == grupo) ||
+            (!wantUsingGroup && currentRuc == ruc));
+
+    if (isSameTarget) {
+      debugPrint(
+        '⏭️ Ya conectado al mismo destino: '
+        '${wantUsingGroup ? "GRUPO=$grupo" : "RUC=$ruc"}',
+      );
+      // Si había algo encolado, envíalo de todos modos
+      if (_queuedPedir != null) {
+        _socket?.emit('PedirGrafica', _queuedPedir);
+        _queuedPedir = null;
+      }
       return;
     }
 
-    _isConnecting = true;
+    // ---- Cambia objetivo y limpia caches de grupo ----
+    _usingGroup = wantUsingGroup;
     _currentRuc = ruc;
+    _currentGrupo = grupo;
+    _groupRucs = [];
+    _groupRucNombre = {};
+    _queuedPedir = null;
 
-    _reconnectTimer?.cancel();
-    _reconnectTimer = null;
-
+    // ---- Tumba socket previo (si existe) ----
     if (_socket != null) {
-      debugPrint('🔌 Cerrando socket previo');
-      _socket!
-        ..disconnect()
-        ..dispose();
+      try {
+        _socket!.disconnect();
+      } catch (_) {}
+      try {
+        _socket!.dispose();
+      } catch (_) {}
       _socket = null;
     }
 
-    debugPrint('🔄 Conectando WS para RUC: $ruc');
+    _isConnected = false;
+    _isConnecting = true;
+    _connCompleter = Completer<void>();
+
+    debugPrint(
+      '🔄 Conectando WS: ${_usingGroup ? "GRUPO=$grupo" : "RUC=$ruc"}',
+    );
 
     try {
-      _socket = IO.io('http://200.1.179.157:3000', <String, dynamic>{
+      _socket = IO.io('http://200.1.179.157:3000', {
         'transports': ['websocket'],
         'autoConnect': false,
-        'reconnection': false,
+        'reconnection': true,
+        'reconnectionAttempts': 3,
+        'forceNew': true,
+        'query': {'alias': 'PRTG'},
       });
 
-      _setupSocketListeners(ruc);
+      _setupSocketListeners(ruc: ruc, grupo: grupo);
       _socket!.connect();
     } catch (e) {
       _isConnecting = false;
+      _connCompleter?.completeError(e);
       debugPrint('❌ Error al crear socket: $e');
       rethrow;
     }
   }
 
-  void _setupSocketListeners(String ruc) {
+  void _setupSocketListeners({String? ruc, String? grupo}) {
     _socket!
       ..on('connect', (_) async {
         debugPrint('✅ WS connected');
         _isConnected = true;
         _isConnecting = false;
-        _reconnectTimer?.cancel();
-        _reconnectTimer = null;
+        _connCompleter?.complete();
 
-        _socket!.emit('joinRoom', {
-          'ruc': ruc,
+        // 👇 Unirse a la sala correcta (compat: siempre envío 'ruc')
+        final joinParams = <String, dynamic>{
           'alias': 'PRTG',
           'colores': _rawColors,
-        });
+        };
+        if (_usingGroup && (grupo != null && grupo.isNotEmpty)) {
+          joinParams['GRUPO'] = grupo;
+          joinParams['ruc'] = _roomFromGroup(grupo); // <- clave para room
+        } else if (!_usingGroup && (ruc != null && ruc.isNotEmpty)) {
+          joinParams['RUC'] = ruc;
+          joinParams['ruc'] = ruc; // compat
+        }
+        _socket!.emit('joinRoom', joinParams);
+
+        // 🔸 PRIMERA CARGA
+        await Future.delayed(const Duration(milliseconds: 250));
+        if (_usingGroup && (grupo != null && grupo.isNotEmpty)) {
+          final pedir = {
+            'alias': 'PRTG',
+            'GRUPO': grupo,
+            'ruc': _roomFromGroup(grupo),
+          };
+          debugPrint('📊 PedirGrafica init (grupo): $pedir');
+          _socket!.emit('PedirGrafica', pedir);
+        } else if (ruc != null && ruc.isNotEmpty) {
+          final pedir = {'alias': 'PRTG', 'RUC': ruc, 'ruc': ruc};
+          debugPrint('📊 PedirGrafica init (ruc): $pedir');
+          _socket!.emit('PedirGrafica', pedir);
+        }
+
+        // Enviar lo encolado (si hubiera)
+        if (_queuedPedir != null) {
+          await Future.delayed(const Duration(milliseconds: 150));
+          debugPrint('⏩ Enviando PedirGrafica encolado: $_queuedPedir');
+          _socket!.emit('PedirGrafica', _queuedPedir);
+          _queuedPedir = null;
+        }
 
         notifyListeners();
-
-        await Future.delayed(const Duration(milliseconds: 400));
-        if (_isConnected && _socket != null) {
-          debugPrint('📊 Solicitando payload inicial para RUC: $ruc');
-          _socket!.emit('PedirGrafica', {'ruc': ruc, 'alias': 'PRTG'});
-        }
       })
-      ..on('miembrosSala', (data) {
-        if (data is List) {
-          miembrosSala = data.map((e) => e.toString()).toList();
-          notifyListeners();
-        }
-      })
-      ..on('grafica', (data) {
-        debugPrint('📥 grafica raw: $data');
-        _ingestarPayload(data);
-      })
-      ..on('payload', (data) {
-        debugPrint('📥 payload raw: $data');
-        _ingestarPayload(data);
-      })
+      ..on('payload', (data) => _ingestarPayload(data))
+      ..on('grafica', (data) => _ingestarPayload(data))
       ..on('disconnect', (_) {
-        debugPrint('❌ WS disconnected');
         _isConnected = false;
         _isConnecting = false;
+        _connCompleter = null;
+        debugPrint('🔌 WS disconnect');
         notifyListeners();
       })
-      ..on('error', (e) {
-        debugPrint('❌ WS error: $e');
+      ..on('connect_error', (e) {
+        _isConnected = false;
         _isConnecting = false;
+        _connCompleter?.completeError(e);
+        _connCompleter = null;
+        debugPrint('⚠️ connect_error: $e');
         notifyListeners();
-      });
+      })
+      ..on('error', (e) => debugPrint('⚠️ socket error: $e'))
+      ..on('reconnect_attempt', (n) => debugPrint('… reconnect_attempt $n'))
+      ..on('reconnect_error', (e) => debugPrint('⚠️ reconnect_error: $e'))
+      ..on('reconnect_failed', (_) => debugPrint('❌ reconnect_failed'));
   }
 
+  // ======= Forzar índice de grupo (si lo necesitas manual) =======
+
+  // Pedir gráfica dentro del grupo actual seleccionando un RUC
+  Future<void> requestGraphDataForSelection({
+    String? ruc,
+    String? grupo,
+  }) async {
+    final String? g = (grupo ?? _currentGrupo)?.toString();
+    final bool inGroup = (g != null && g.isNotEmpty);
+
+    // Payload consistente con el init de grupo:
+    // - 'GRUPO': nombre con espacios
+    // - 'ruc': room del grupo (compat backend)
+    // - 'RUC': filtro opcional dentro del grupo
+    final Map<String, dynamic> payload = {
+      'alias': 'PRTG',
+      if (inGroup) 'GRUPO': g!,
+      if (!inGroup && ruc != null && ruc.isNotEmpty) ...{
+        'RUC': ruc,
+        'ruc': ruc, // compat clásica por RUC
+      },
+      if (inGroup && ruc != null && ruc.isNotEmpty) ...{
+        'RUC': ruc, // filtro por RUC dentro del grupo
+        'ruc': _roomFromGroup(g!), // room del GRUPO, no del RUC
+      },
+      if (inGroup && (ruc == null || ruc.isEmpty)) ...{
+        'ruc': _roomFromGroup(g!), // pedir TODOS los RUCs del grupo
+      },
+    };
+
+    // Estado local para UI/flujo:
+    if (inGroup) {
+      // selección efímera en sesión (no persistir _currentRuc)
+      selectedGroupRuc = (ruc != null && ruc.isNotEmpty) ? ruc : null;
+    } else if (ruc != null && ruc.isNotEmpty) {
+      // modo RUC clásico
+      _currentRuc = ruc;
+    }
+
+    if (_socket == null || !_isConnected) {
+      _queuedPedir = payload;
+      debugPrint('⏳ No conectado. Encolando PedirGrafica: $payload');
+      notifyListeners(); // refleja selectedGroupRuc en la UI
+      return;
+    }
+
+    debugPrint('🔄 PedirGrafica ${inGroup ? "(grupo)" : "(ruc)"}: $payload');
+    _socket!.emit('PedirGrafica', payload);
+    notifyListeners();
+  }
+
+  // ========= Limpieza =========
+  void clearData() {
+    valores = [];
+    leyenda = [];
+    colors = [];
+    _rawColors = [];
+    grafica = {};
+    detalle = {};
+    acordeon = {};
+    resumen = {};
+    afectados = null;
+    extra = const {};
+    msg = '';
+    fecha = '';
+    alias = 'APPFiberlux';
+    _groupRucs = [];
+    _groupRucNombre = {};
+    _currentRuc = null;
+    _queuedPedir = null;
+    notifyListeners();
+    debugPrint('🧹 Limpieza completa del GraphSocketProvider');
+  }
+
+  // ========= Construcción de gráfica =========
   double _toDouble(dynamic v) {
     if (v is num) return v.toDouble();
     return double.tryParse(v?.toString() ?? '') ?? 0.0;
-  }
-
-  Map<String, dynamic> _asMap(dynamic v) {
-    if (v is Map) return Map<String, dynamic>.from(v);
-    return <String, dynamic>{};
   }
 
   void _buildChartDataFromSections({
@@ -254,7 +593,6 @@ class GraphSocketProvider extends ChangeNotifier {
       colors = leyenda.map(_colorForStatusName).toList();
       return;
     }
-
     if (graficaSection.isNotEmpty) {
       final entries = graficaSection.entries.toList();
       leyenda = entries.map((e) => e.key.toString()).toList();
@@ -262,11 +600,9 @@ class GraphSocketProvider extends ChangeNotifier {
       colors = leyenda.map(_colorForStatusName).toList();
       return;
     }
-
     if (labelsLegacy.isNotEmpty && valuesLegacy.isNotEmpty) {
       leyenda = labelsLegacy.map((e) => e.toString()).toList();
       valores = valuesLegacy.map(_toDouble).toList();
-      // Si pasaron _rawColors se usan, sino se toma el map por nombre, si no hay ninguno será gris
       if (_rawColors.isNotEmpty && _rawColors.length >= leyenda.length) {
         colors = _rawColors
             .take(leyenda.length)
@@ -277,174 +613,271 @@ class GraphSocketProvider extends ChangeNotifier {
       }
       return;
     }
-
-    // si no hubo nada, limpia
     leyenda = [];
     valores = [];
     colors = [];
   }
 
-  // ========= Ingesta del payload =========
+  // ========= Ingesta del payload (robusta) =========
   void _ingestarPayload(dynamic data) {
     try {
-      // 1) Base: el payload puede venir plano o dentro de "grafica"
-      final isMap = data is Map;
-      final hasNested = isMap && data['grafica'] is Map;
-
-      final Map<String, dynamic> src = hasNested
-          ? Map<String, dynamic>.from(data['grafica'] as Map)
-          : isMap
-          ? Map<String, dynamic>.from(data as Map)
-          : <String, dynamic>{};
-
-      Map<String, dynamic> _pickMap(dynamic v) =>
-          v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{};
       int _toIntSafe(dynamic v) =>
           v is num ? v.toInt() : int.tryParse('${v ?? 0}'.trim()) ?? 0;
 
-      // Secciones crudas
-      Map<String, dynamic> graficaSection = _pickMap(
-        src['Grafica'] ?? src['grafica'],
-      );
-      final Map<String, dynamic> detalleSection = _pickMap(
-        src['Detalle'] ?? src['detalle'],
-      );
-      final Map<String, dynamic> acordeonSection = _pickMap(
-        src['Acordeon'] ?? src['acordeon'],
-      );
+      final root = _asMapDeep(data);
 
-      // 2) Normalizar/calc. UP/DOWN
-      int? upVal = graficaSection.isNotEmpty
-          ? _toIntSafe(
-              graficaSection['UP'] ??
-                  graficaSection['Up'] ??
-                  graficaSection['up'],
-            )
-          : null;
-      int? downVal = graficaSection.isNotEmpty
-          ? _toIntSafe(
-              graficaSection['DOWN'] ??
-                  graficaSection['Down'] ??
-                  graficaSection['down'],
-            )
-          : null;
+      bool looksLikeContainer(Map m) =>
+          m.containsKey('Resumen') ||
+          m.containsKey('resumen') ||
+          m.containsKey('Grafica') ||
+          m.containsKey('grafica') ||
+          m.containsKey('Detalle') ||
+          m.containsKey('detalle') ||
+          m.containsKey('Acordeon') ||
+          m.containsKey('acordeon');
 
-      // Fallback: UP/DOWN sueltos a nivel raíz
-      if (upVal == null || downVal == null) {
-        final upAny = src['UP'] ?? src['Up'] ?? src['up'];
-        final downAny = src['DOWN'] ?? src['Down'] ?? src['down'];
-        if (upAny != null && upVal == null) upVal = _toIntSafe(upAny);
-        if (downAny != null && downVal == null) downVal = _toIntSafe(downAny);
+      Map<String, dynamic> src = root;
+      if (!looksLikeContainer(src)) {
+        final cg = _asMapDeep(root['grafica']);
+        final cG = _asMapDeep(root['Grafica']);
+        if (looksLikeContainer(cg)) {
+          src = cg;
+        } else if (looksLikeContainer(cG)) {
+          src = cG;
+        }
       }
 
-      // Fallback: desde Detalle (DOWN + ONULOS + OLTLOS)
-      if ((upVal == null && downVal == null) ||
-          (upVal == 0 && downVal == 0 && detalleSection.isNotEmpty)) {
-        if (detalleSection.isNotEmpty) {
-          final up = _toIntSafe(
+      // Secciones "clásicas"
+      Map<String, dynamic> graficaSection = _asMapDeep(
+        src['Grafica'] ?? src['grafica'] ?? root['Grafica'] ?? root['grafica'],
+      );
+      final Map<String, dynamic> detalleSection = _asMapDeep(
+        src['Detalle'] ?? src['detalle'] ?? root['Detalle'] ?? root['detalle'],
+      );
+      final Map<String, dynamic> acordeonSection = _asMapDeep(
+        src['Acordeon'] ??
+            src['acordeon'] ??
+            root['Acordeon'] ??
+            root['acordeon'],
+      );
+
+      // Agregados (como en el demo web del grupo)
+      final List<dynamic> leyendaAgg =
+          (src['leyenda'] as List?) ?? (root['leyenda'] as List?) ?? const [];
+      final List<dynamic> valoresAgg =
+          (src['valores'] as List?) ?? (root['valores'] as List?) ?? const [];
+      final List<dynamic> coloresAgg =
+          (src['colores'] as List?) ?? (root['colores'] as List?) ?? const [];
+
+      bool appliedAgg = false;
+
+      // 🟣 PRIORIDAD en modo GRUPO: usar leyenda/valores/colores
+      if (_usingGroup && leyendaAgg.isNotEmpty && valoresAgg.isNotEmpty) {
+        leyenda = leyendaAgg.map((e) => e.toString()).toList();
+        valores = valoresAgg.map(_toDouble).toList();
+        if (coloresAgg.isNotEmpty) {
+          colors = coloresAgg
+              .map((e) => _parseColorString(e.toString()))
+              .toList();
+        } else {
+          colors = leyenda.map(_colorForStatusName).toList();
+        }
+        // Calcula grafica simple UP/DOWN si no vino
+        final upI = leyenda.indexWhere((l) => l.toUpperCase() == 'UP');
+        final dnI = leyenda.indexWhere((l) => l.toUpperCase() == 'DOWN');
+        final upV = (upI >= 0 && upI < valores.length)
+            ? valores[upI].toInt()
+            : 0;
+        final dnV = (dnI >= 0 && dnI < valores.length)
+            ? valores[dnI].toInt()
+            : 0;
+        graficaSection = {'UP': upV, 'DOWN': dnV};
+
+        appliedAgg = true;
+      }
+
+      // Si no aplicamos agregados, usar la lógica tradicional
+      if (!appliedAgg) {
+        int? upVal, downVal;
+        if (graficaSection.isNotEmpty) {
+          upVal = _toIntSafe(
+            graficaSection['UP'] ??
+                graficaSection['Up'] ??
+                graficaSection['up'],
+          );
+          downVal = _toIntSafe(
+            graficaSection['DOWN'] ??
+                graficaSection['Down'] ??
+                graficaSection['down'],
+          );
+        }
+        if (upVal == null && downVal == null) {
+          final upAny =
+              src['UP'] ??
+              src['Up'] ??
+              src['up'] ??
+              root['UP'] ??
+              root['Up'] ??
+              root['up'];
+          final dnAny =
+              src['DOWN'] ??
+              src['Down'] ??
+              src['down'] ??
+              root['DOWN'] ??
+              root['Down'] ??
+              root['down'];
+          if (upAny != null) upVal = _toIntSafe(upAny);
+          if (dnAny != null) downVal = _toIntSafe(dnAny);
+        }
+        if (upVal == null && downVal == null && detalleSection.isNotEmpty) {
+          upVal = _toIntSafe(
             detalleSection['UP'] ??
                 detalleSection['Up'] ??
                 detalleSection['up'],
           );
-          final down =
-              _toIntSafe(
-                detalleSection['DOWN'] ??
-                    detalleSection['Down'] ??
-                    detalleSection['down'],
-              ) +
-              _toIntSafe(
-                detalleSection['ONULOS'] ??
-                    detalleSection['OnuLos'] ??
-                    detalleSection['onulos'],
-              ) +
-              _toIntSafe(
-                detalleSection['OLTLOS'] ??
-                    detalleSection['OltLos'] ??
-                    detalleSection['oltlos'],
-              );
-          upVal = up;
-          downVal = down;
+          downVal = _toIntSafe(
+            detalleSection['DOWN'] ??
+                detalleSection['Down'] ??
+                detalleSection['down'],
+          );
+        }
+        if (upVal == null && downVal == null && acordeonSection.isNotEmpty) {
+          upVal = (acordeonSection['UP'] as List?)?.length ?? 0;
+          downVal = (acordeonSection['DOWN'] as List?)?.length ?? 0;
+        }
+
+        graficaSection = {'UP': _toIntSafe(upVal), 'DOWN': _toIntSafe(downVal)};
+        // Construcción de series
+        final labelsLegacy =
+            (src['labels'] as List?) ?? (src['leyenda'] as List?) ?? const [];
+        final valuesLegacy =
+            (src['values'] as List?) ?? (src['valores'] as List?) ?? const [];
+        _buildChartDataFromSections(
+          detalleSection: detalleSection,
+          graficaSection: graficaSection,
+          labelsLegacy: labelsLegacy,
+          valuesLegacy: valuesLegacy,
+        );
+
+        // colores desde el payload (ahora también acepta 'colores')
+        final Map<String, dynamic> colorMapAny = _asMapDeep(
+          src['colorMap'] ??
+              src['colormap'] ??
+              src['colores_map'] ??
+              _asMapDeep(
+                src['Grafica']?['colorMap'] ?? src['Grafica']?['colormap'],
+              ),
+        );
+        final List<dynamic> colorsListAny =
+            (src['colors'] as List?) ??
+            (src['colores'] as List?) ?? // ← nuevo
+            (src['colores_list'] as List?) ??
+            (src['Grafica']?['colors'] as List?) ??
+            const [];
+
+        if (colorMapAny.isNotEmpty) {
+          _rawColorMap = {
+            for (final e in colorMapAny.entries)
+              e.key.toString(): e.value.toString(),
+          };
+          _colorsByName = {
+            for (final e in _rawColorMap.entries)
+              _normKey(e.key): _parseColorString(e.value),
+          };
+          if (leyenda.isNotEmpty) {
+            colors = leyenda
+                .map(
+                  (name) =>
+                      _colorsByName[_normKey(name)] ??
+                      _colorForStatusName(name),
+                )
+                .toList();
+          }
+        } else if (colorsListAny.isNotEmpty && leyenda.isNotEmpty) {
+          final n = math.min(leyenda.length, colorsListAny.length);
+          colors = List<Color>.generate(
+            n,
+            (i) => _parseColorString(colorsListAny[i].toString()),
+          );
+          if (n < leyenda.length) {
+            colors.addAll(leyenda.skip(n).map(_colorForStatusName));
+          }
         }
       }
 
-      // Fallback: desde Acordeon (conteo de listas)
-      if ((upVal == null && downVal == null) ||
-          (upVal == 0 && downVal == 0 && acordeonSection.isNotEmpty)) {
-        if (acordeonSection.isNotEmpty) {
-          final up = (acordeonSection['UP'] as List?)?.length ?? 0;
-          final down =
-              ((acordeonSection['DOWN'] as List?)?.length ?? 0) +
-              ((acordeonSection['ONULOS'] as List?)?.length ?? 0) +
-              ((acordeonSection['OLTLOS'] as List?)?.length ?? 0);
-          upVal = up;
-          downVal = down;
-        }
-      }
-
-      // Asignar secciones normalizadas
-      graficaSection = {'UP': _toIntSafe(upVal), 'DOWN': _toIntSafe(downVal)};
+      // Guardar secciones y metadatos comunes
       grafica = graficaSection;
       detalle = detalleSection;
       acordeon = acordeonSection;
 
-      // Log robusto
-      debugPrint(
-        '🔥 GRAFICA parsed => UP=${grafica['UP']}, DOWN=${grafica['DOWN']}',
+      final nuevoResumen = _asMapDeep(
+        src['Resumen'] ?? src['resumen'] ?? root['Resumen'] ?? root['resumen'],
       );
+      resumen = nuevoResumen;
 
-      // 3) Construcción para la UI (agregados/legacy)
-      final labelsLegacy =
-          (src['labels'] as List?) ?? (src['leyenda'] as List?) ?? const [];
-      final valuesLegacy =
-          (src['values'] as List?) ?? (src['valores'] as List?) ?? const [];
+      final gName = currentGroupName;
+      if (gName != null && gName.isNotEmpty && gName != _lastGroupPersisted) {
+        _lastGroupPersisted = gName;
+        try {
+          onGroupResolved?.call(gName);
+        } catch (_) {}
+      }
 
-      _buildChartDataFromSections(
-        detalleSection: detalleSection,
-        graficaSection: graficaSection,
-        labelsLegacy: labelsLegacy,
-        valuesLegacy: valuesLegacy,
-      );
+      _cachearContactosDesdeResumen(nuevoResumen);
 
-      // 4) Otros campos
-      resumen = _pickMap(src['Resumen'] ?? src['resumen']);
-      afectados = src['Afectados'] ?? src['afectados'];
-      msg = (src['msg'] ?? src['Msg'] ?? msg).toString();
-      fecha = (src['fecha'] ?? src['Fecha'] ?? fecha).toString();
-      alias = (src['alias'] ?? src['Alias'] ?? alias).toString();
+      afectados =
+          src['Afectados'] ??
+          src['afectados'] ??
+          root['Afectados'] ??
+          root['afectados'];
+      msg = (src['msg'] ?? root['msg'] ?? msg).toString();
+      fecha =
+          (src['fecha'] ??
+                  src['Fecha'] ??
+                  root['fecha'] ??
+                  root['Fecha'] ??
+                  fecha)
+              .toString();
+      alias =
+          (src['alias'] ??
+                  src['Alias'] ??
+                  root['alias'] ??
+                  root['Alias'] ??
+                  alias)
+              .toString();
 
-      const known = {
-        'ruc',
-        'alias',
-        'valores',
-        'leyenda',
-        'colores',
-        'msg',
-        'fecha',
-        'labels',
-        'values',
-        'colors',
-        'detalle',
-        'Detalle',
-        'resumen',
-        'Resumen',
-        'acordeon',
-        'Acordeon',
-        'afectados',
-        'Afectados',
-        'grafica',
-        'Grafica',
-      };
-      extra = {
-        for (final e in src.entries)
-          if (!known.contains(e.key)) e.key: e.value,
-      };
+      // Índice de grupo (RUCs y razones)
+      final dynamic maybeRucs = nuevoResumen['RUCs'];
+      if (maybeRucs is List) {
+        _groupRucs = maybeRucs
+            .map((e) => e.toString())
+            .where((s) => s.trim().isNotEmpty)
+            .toList();
+      }
+      final dynamic maybeRazList = nuevoResumen['RUCs_Razones'];
+      if (maybeRazList is List) {
+        final nuevoMapa = <String, String>{};
+        for (final it in maybeRazList) {
+          if (it is Map) {
+            final r = it['RUC']?.toString();
+            final n = (it['Razon_Social'] ?? it['Razon'])?.toString() ?? '';
+            if (r != null && r.isNotEmpty) nuevoMapa[r] = n.trim();
+          }
+        }
+        if (nuevoMapa.isNotEmpty) _groupRucNombre = nuevoMapa;
+      }
+      final dynamic maybeRazMap = nuevoResumen['RUCs_Razones_Map'];
+      if (maybeRazMap is Map) {
+        final m = Map<String, dynamic>.from(maybeRazMap as Map);
+        m.forEach((k, v) {
+          final r = k.toString();
+          final n = (v?.toString() ?? '').trim();
+          if (r.isNotEmpty) _groupRucNombre[r] = n;
+        });
+      }
 
       debugPrint(
-        '✅ Payload ok: '
-        'leyenda=${leyenda.length}, valores=${valores.length}, '
-        'Detalle(keys)=${detalle.keys.length}, '
-        'Acordeon(keys)=${acordeon.keys.length}, '
-        'Afectados=${afectados != null}',
+        '🧩 Grupo: ${currentGroupName ?? "-"}  RUCs=${_groupRucs.length}  Razones=${_groupRucNombre.length}',
       );
       notifyListeners();
     } catch (e, st) {
@@ -452,29 +885,28 @@ class GraphSocketProvider extends ChangeNotifier {
     }
   }
 
-  // ========= Refresh manual =========
+  // ========= Refresh manual (por RUC directo) =========
   void requestGraphData(String ruc) {
+    final payload = {'RUC': ruc, 'ruc': ruc, 'alias': 'PRTG'};
     if (_socket != null && _isConnected) {
-      debugPrint('🔄 Solicitar refresh para RUC: $ruc');
-      _socket!.emit('PedirGrafica', {'ruc': ruc, 'alias': 'PRTG'});
+      debugPrint('🔄 Solicitar refresh para RUC: $payload');
+      _socket!.emit('PedirGrafica', payload);
     } else {
-      debugPrint(
-        '⚠️ No se puede pedir gráfica: socket=${_socket != null}, connected=$_isConnected',
-      );
+      _queuedPedir = payload;
+      debugPrint('⏳ No conectado. Encolando refresh: $payload');
     }
   }
 
   // ========= Desconexión =========
   void disconnect() {
     debugPrint('🔌 Desconectando socket manualmente');
-    _reconnectTimer?.cancel();
-    _reconnectTimer = null;
     _socket?.disconnect();
     _socket?.dispose();
     _socket = null;
     _isConnected = false;
     _isConnecting = false;
-
+    _connCompleter = null;
+    _queuedPedir = null;
     msg = '';
     _currentRuc = null;
     notifyListeners();

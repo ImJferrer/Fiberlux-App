@@ -78,24 +78,6 @@ class _FiberluxLaunchScreenState extends State<FiberluxLaunchScreen>
       gradientStart: Color(0xFFa8edea),
       gradientEnd: Color(0xFFfed6e3),
     ),
-    FeatureItem(
-      title: 'Programa de Beneficios',
-      subtitle: 'Recompensas exclusivas por tu lealtad',
-      icon: Icons.card_giftcard_outlined,
-      imageUrl:
-          'https://images.unsplash.com/photo-1513475382585-d06e58bcb0e0?ixlib=rb-4.0.3&w=800',
-      gradientStart: Color(0xFFffecd2),
-      gradientEnd: Color(0xFFfcb69f),
-    ),
-    FeatureItem(
-      title: 'Ciberseguridad Enterprise',
-      subtitle: 'Protección avanzada para tu empresa',
-      icon: Icons.security_outlined,
-      imageUrl:
-          'https://images.unsplash.com/photo-1550751827-4bd374c3f58b?ixlib=rb-4.0.3&w=800',
-      gradientStart: Color(0xFF667eea),
-      gradientEnd: Color(0xFF764ba2),
-    ),
   ];
 
   @override

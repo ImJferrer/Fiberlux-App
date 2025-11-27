@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:fiberlux_new_app/providers/notifications_provider.dart';
 import 'package:fiberlux_new_app/widgets/buildAppBarNotifications/buildappbarnotifications.dart';
 import 'package:fiberlux_new_app/widgets/menu.dart';
 
@@ -5,6 +8,7 @@ import '../providers/SessionProvider.dart';
 import 'login.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:http/http.dart' as http;
 
 class QAPantalla extends StatefulWidget {
   const QAPantalla({super.key});
@@ -14,7 +18,7 @@ class QAPantalla extends StatefulWidget {
 }
 
 class _QAPantallaState extends State<QAPantalla> {
-  bool hasNotifications = true;
+  // 🔔 YA NO usamos hasNotifications local, todo viene de SessionProvider
 
   final List<Map<String, dynamic>> faqItems = [
     {
@@ -61,6 +65,19 @@ class _QAPantallaState extends State<QAPantalla> {
       'isExpanded': false,
     },
   ];
+
+  void _openChatSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return FractionallySizedBox(heightFactor: 0.9, child: _QAChatSheet());
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -170,40 +187,54 @@ class _QAPantallaState extends State<QAPantalla> {
                           NotificationOverlay.isShowing
                               ? Icons.notifications
                               : Icons.notifications_outlined,
-                          color: const Color(0xFFA4238E),
+                          color: Colors.purple, // o tu color
                           size: 28,
                         ),
                         onPressed: () {
+                          final notifProv = context
+                              .read<NotificationsProvider>();
+
                           if (NotificationOverlay.isShowing) {
+                            // Si ya está abierta, la cerramos normal
                             NotificationOverlay.hide();
                           } else {
+                            // 👇 Apenas se abre la campanita, marcamos todas como leídas
+                            notifProv.markAllRead();
+
                             NotificationOverlay.show(
                               context,
+                              // el onClose ahora puede quedar vacío o solo para otras cosas
                               onClose: () {
-                                setState(() {
-                                  hasNotifications = false;
-                                });
+                                // aquí ya NO necesitas tocar las notificaciones
                               },
                             );
                           }
                         },
                       ),
-                      if (hasNotifications)
-                        Positioned(
-                          top: 10,
-                          right: 10,
-                          child: Container(
-                            width: 10,
-                            height: 10,
-                            decoration: const BoxDecoration(
-                              color: Colors.red,
-                              shape: BoxShape.circle,
+
+                      // 👇 ESTE ES EL PUNTO ROJO GLOBAL
+                      Consumer<NotificationsProvider>(
+                        builder: (_, notifProv, __) {
+                          if (!notifProv.hasUnread)
+                            return const SizedBox.shrink();
+                          return Positioned(
+                            top: 10,
+                            right: 10,
+                            child: Container(
+                              width: 10,
+                              height: 10,
+                              decoration: const BoxDecoration(
+                                color: Colors.red,
+                                shape: BoxShape.circle,
+                              ),
                             ),
-                          ),
-                        ),
+                          );
+                        },
+                      ),
                     ],
                   ),
-                  // MENÚ HAMBURGUESA
+
+                  // MENÚ HAMBURGUESA (si quieres agregar el botón del drawer aquí)
                 ],
               ),
             ],
@@ -243,26 +274,11 @@ class _QAPantallaState extends State<QAPantalla> {
         ),
       ),
 
-      // Botón flotante de chat/IA
-      floatingActionButton: Container(
-        width: 60,
-        height: 60,
-        decoration: BoxDecoration(
-          color: const Color(0xFFA4238E),
-          shape: BoxShape.circle,
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFFA4238E).withOpacity(0.3),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: const Icon(
-          Icons.chat_bubble_outline,
-          color: Colors.white,
-          size: 28,
-        ),
+      // FAB del chat conversacional
+      floatingActionButton: FloatingActionButton(
+        backgroundColor: const Color(0xFFA4238E),
+        onPressed: _openChatSheet,
+        child: const Icon(Icons.chat_bubble_outline, color: Colors.white),
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
     );
@@ -323,6 +339,329 @@ class _QAPantallaState extends State<QAPantalla> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ======================= CHAT SHEET =======================
+
+class _ChatMessage {
+  final String text;
+  final bool fromUser;
+
+  _ChatMessage({required this.text, required this.fromUser});
+}
+
+class _QAChatSheet extends StatefulWidget {
+  @override
+  State<_QAChatSheet> createState() => _QAChatSheetState();
+}
+
+class _QAChatSheetState extends State<_QAChatSheet> {
+  final List<_ChatMessage> _messages = [];
+  final TextEditingController _controller = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  bool _sending = false;
+
+  /// Convierte **texto** en negrita ocultando los ** en el mensaje
+  Widget parseMessageText(String text, {bool isUser = false}) {
+    final regex = RegExp(r'\*\*(.*?)\*\*');
+    final List<TextSpan> spans = [];
+    int start = 0;
+
+    for (final match in regex.allMatches(text)) {
+      // Texto antes del bloque en negrita
+      if (match.start > start) {
+        spans.add(
+          TextSpan(
+            text: text.substring(start, match.start),
+            style: TextStyle(
+              fontSize: 14,
+              height: 1.4,
+              color: isUser ? Colors.white : Colors.black87,
+            ),
+          ),
+        );
+      }
+
+      // Texto en negrita (sin los **)
+      final boldText = match.group(1);
+
+      spans.add(
+        TextSpan(
+          text: boldText,
+          style: TextStyle(
+            fontSize: 14,
+            height: 1.4,
+            fontWeight: FontWeight.bold,
+            color: isUser ? Colors.white : Colors.black87,
+          ),
+        ),
+      );
+
+      start = match.end;
+    }
+
+    // Resto del texto (si lo hay)
+    if (start < text.length) {
+      spans.add(
+        TextSpan(
+          text: text.substring(start),
+          style: TextStyle(
+            fontSize: 14,
+            height: 1.4,
+            color: isUser ? Colors.white : Colors.black87,
+          ),
+        ),
+      );
+    }
+
+    return RichText(text: TextSpan(children: spans));
+  }
+
+  static const String _endpoint = 'http://209.45.78.22:9000/ask';
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _sendQuestion() async {
+    final text = _controller.text.trim();
+    if (text.isEmpty || _sending) return;
+
+    setState(() {
+      _messages.add(_ChatMessage(text: text, fromUser: true));
+      _sending = true;
+      _controller.clear();
+    });
+
+    _scrollToBottom();
+
+    try {
+      final resp = await http.post(
+        Uri.parse(_endpoint),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'question': text}),
+      );
+
+      if (!mounted) return;
+
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        final answer = (data['answer'] ?? '').toString().trim();
+
+        setState(() {
+          _messages.add(
+            _ChatMessage(
+              text: answer.isEmpty
+                  ? 'No recibí una respuesta del asistente.'
+                  : answer,
+              fromUser: false,
+            ),
+          );
+        });
+      } else {
+        setState(() {
+          _messages.add(
+            _ChatMessage(
+              text:
+                  'Ocurrió un error al consultar el asistente (HTTP ${resp.statusCode}).',
+              fromUser: false,
+            ),
+          );
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _messages.add(
+          _ChatMessage(
+            text: 'No se pudo conectar con el asistente. Inténtalo nuevamente.',
+            fromUser: false,
+          ),
+        );
+      });
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _sending = false;
+      });
+      _scrollToBottom();
+    }
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent + 80,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: bottomInset),
+        child: Column(
+          children: [
+            // Header
+            Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16.0,
+                vertical: 12.0,
+              ),
+              decoration: const BoxDecoration(
+                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                color: Colors.white,
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.support_agent, color: Color(0xFFA4238E)),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Asistente Fiberlux',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+            ),
+
+            const Divider(height: 1),
+
+            // Lista de mensajes
+            Expanded(
+              child: Container(
+                color: Colors.grey[100],
+                child: ListView.builder(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12.0,
+                    vertical: 8.0,
+                  ),
+                  itemCount: _messages.length,
+                  itemBuilder: (context, index) {
+                    final msg = _messages[index];
+                    final isUser = msg.fromUser;
+                    return Align(
+                      alignment: isUser
+                          ? Alignment.centerRight
+                          : Alignment.centerLeft,
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(
+                          vertical: 4.0,
+                          horizontal: 4.0,
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 10.0,
+                          horizontal: 14.0,
+                        ),
+                        constraints: BoxConstraints(
+                          maxWidth: MediaQuery.of(context).size.width * 0.75,
+                        ),
+                        decoration: BoxDecoration(
+                          color: isUser
+                              ? const Color(0xFFA4238E)
+                              : Colors.white,
+                          borderRadius: BorderRadius.circular(16.0).copyWith(
+                            bottomLeft: isUser
+                                ? const Radius.circular(16)
+                                : Radius.zero,
+                            bottomRight: isUser
+                                ? Radius.zero
+                                : const Radius.circular(16),
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.05),
+                              blurRadius: 4,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: parseMessageText(msg.text, isUser: isUser),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+
+            // Barra de entrada
+            Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 8.0,
+                vertical: 6.0,
+              ),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border(top: BorderSide(color: Colors.grey.shade300)),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _controller,
+                      minLines: 1,
+                      maxLines: 4,
+                      textInputAction: TextInputAction.send,
+                      onSubmitted: (_) => _sendQuestion(),
+                      decoration: InputDecoration(
+                        hintText: 'Escribe tu pregunta...',
+                        filled: true,
+                        fillColor: Colors.grey[100],
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 10,
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(20),
+                          borderSide: BorderSide(color: Colors.grey.shade300),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(20),
+                          borderSide: const BorderSide(
+                            color: Color(0xFFA4238E),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _sending
+                      ? const SizedBox(
+                          width: 28,
+                          height: 28,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : IconButton(
+                          icon: const Icon(Icons.send),
+                          color: const Color(0xFFA4238E),
+                          onPressed: _sendQuestion,
+                        ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

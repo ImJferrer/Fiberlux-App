@@ -1,11 +1,12 @@
 import 'package:shared_preferences/shared_preferences.dart';
-
 import '../providers/SessionProvider.dart';
 import '../providers/googleUser_provider.dart';
 import '../providers/graph_socket_provider.dart';
 import '../services/auth_service.dart';
+import '../widgets/remote_config_service.dart'; // ← NUEVO
 import '../view/login.dart';
 import '../view/perfil.dart';
+import '../view/encuesta.dart'; // ← NUEVO
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -14,14 +15,28 @@ class FiberluxDrawer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final rc = RemoteConfigService.i;
+    final aiIcon = (rc.aiMenuIconUrl != null)
+        ? ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: Image.network(
+              rc.aiMenuIconUrl!,
+              width: 24,
+              height: 24,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) =>
+                  const Icon(Icons.psychology_alt_rounded, color: Colors.white),
+            ),
+          )
+        : const Icon(Icons.psychology_alt_rounded, color: Colors.white);
+
     return Drawer(
       width: MediaQuery.of(context).size.width * 0.6,
       child: Container(
-        color: const Color(0xFFA4238E), // Color morado de la aplicación
+        color: const Color(0xFFA4238E),
         child: SafeArea(
           child: Column(
             children: [
-              // X button to close drawer
               Align(
                 alignment: Alignment.topRight,
                 child: IconButton(
@@ -29,10 +44,8 @@ class FiberluxDrawer extends StatelessWidget {
                   onPressed: () => Navigator.of(context).pop(),
                 ),
               ),
-
               const SizedBox(height: 20),
 
-              // Menu items
               _buildMenuItem(context, 'Perfil de usuario', () {
                 Navigator.push(
                   context,
@@ -40,12 +53,33 @@ class FiberluxDrawer extends StatelessWidget {
                     builder: (context) => const UserProfileWidget(),
                   ),
                 );
-              }),
+              }, icon: Icons.person_outline),
 
-              _buildMenuItem(context, 'Consultar beneficios', () {
-                Navigator.pop(context);
-                _showDevelopmentSnackBar(context, 'Consultar beneficios');
-              }),
+              // === REEMPLAZO: si está habilitado por RC, mostramos "Encuesta" (icono IA),
+              // y no mostramos "Post Venta"/"Consultar beneficios".
+              if (rc.showAiMenu)
+                _buildMenuItem(
+                  context,
+                  rc.aiMenuTitle, // p.ej. "Encuesta"
+                  () {
+                    Navigator.pop(context);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const EncuestaScreen()),
+                    );
+                  },
+                  leading: aiIcon,
+                )
+              else
+                _buildMenuItem(
+                  context,
+                  'Consultar beneficios', // tu ítem antiguo (Post Venta)
+                  () {
+                    Navigator.pop(context);
+                    _showDevelopmentSnackBar(context, 'Consultar beneficios');
+                  },
+                  icon: Icons.local_offer_outlined,
+                ),
 
               _buildMenuItem(
                 context,
@@ -55,14 +89,9 @@ class FiberluxDrawer extends StatelessWidget {
                   Navigator.pop(context);
                   _showDevelopmentSnackBar(context, 'Términos y condiciones');
                 },
+                icon: Icons.description_outlined,
               ),
 
-              _buildMenuItem(context, 'Asesor postventa', () {
-                Navigator.pop(context);
-                _showDevelopmentSnackBar(context, 'Asesor postventa');
-              }),
-
-              // Divider line
               Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 40,
@@ -74,59 +103,55 @@ class FiberluxDrawer extends StatelessWidget {
                 ),
               ),
 
-              // Logout option
-              _buildMenuItem(context, 'Cerrar sesión', () async {
-                try {
-                  await AuthService().signOut();
-                } catch (e) {
-                  debugPrint('Error al cerrar sesión con AuthService: $e');
-                }
+              _buildMenuItem(
+                context,
+                'Cerrar sesión',
+                () async {
+                  try {
+                    await AuthService().signOut();
+                  } catch (e) {
+                    debugPrint('Error al cerrar sesión con AuthService: $e');
+                  }
+                  final sessionProv = Provider.of<SessionProvider>(
+                    context,
+                    listen: false,
+                  );
+                  final googleProv = Provider.of<GoogleUserProvider>(
+                    context,
+                    listen: false,
+                  );
+                  final graphProv = Provider.of<GraphSocketProvider>(
+                    context,
+                    listen: false,
+                  );
 
-                // Providers
-                final sessionProv = Provider.of<SessionProvider>(
-                  context,
-                  listen: false,
-                );
-                final googleProv = Provider.of<GoogleUserProvider>(
-                  context,
-                  listen: false,
-                );
-                final graphProv = Provider.of<GraphSocketProvider>(
-                  context,
-                  listen: false,
-                );
+                  graphProv.disconnect();
+                  graphProv.clearData();
+                  sessionProv.logout();
+                  googleProv.clearUser();
 
-                // 1) Desconectar socket y limpiar
-                graphProv.disconnect();
-                graphProv.clearData();
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.remove('remember_login');
+                  await prefs.remove('saved_username');
+                  await prefs.remove('saved_ruc');
 
-                // 2) Limpiar sesión/providers
-                sessionProv.logout();
-                googleProv.clearUser();
+                  if (!context.mounted) return;
+                  Navigator.of(context).pushAndRemoveUntil(
+                    MaterialPageRoute(builder: (_) => const LoginScreen()),
+                    (route) => false,
+                  );
+                },
+                textColor: Colors.white.withOpacity(0.5),
+                icon: Icons.logout,
+              ),
 
-                // 3) Limpiar AUTOINICIO (remember me) para que Login no te reenvíe al Home
-                final prefs = await SharedPreferences.getInstance();
-                await prefs.remove('remember_login');
-                await prefs.remove('saved_username');
-                await prefs.remove('saved_ruc');
-
-                if (!context.mounted) return;
-
-                // 4) Navegar al login limpiando la pila
-                Navigator.of(context).pushAndRemoveUntil(
-                  MaterialPageRoute(builder: (_) => const LoginScreen()),
-                  (route) => false,
-                );
-              }, textColor: Colors.white.withOpacity(0.5)),
-
-              // Push to bottom - App version
               const Spacer(),
               Padding(
                 padding: const EdgeInsets.only(bottom: 20, right: 30),
                 child: Align(
                   alignment: Alignment.bottomRight,
                   child: Text(
-                    'App Mi Fiberlux 1.0v',
+                    'Version 1.1',
                     style: TextStyle(
                       color: Colors.white.withOpacity(0.7),
                       fontSize: 13,
@@ -146,20 +171,35 @@ class FiberluxDrawer extends StatelessWidget {
     String title,
     Function() onTap, {
     Color? textColor,
+    IconData? icon,
+    Widget? leading, // ⬅️ NUEVO
   }) {
+    final effectiveLeading =
+        leading ??
+        Icon(icon ?? Icons.chevron_right, color: (textColor ?? Colors.white));
+
     return InkWell(
       onTap: onTap,
       child: Container(
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 40),
-        child: Text(
-          title,
-          textAlign: TextAlign.right,
-          style: TextStyle(
-            color: textColor ?? Colors.white,
-            fontSize: 18,
-            fontWeight: FontWeight.w400,
-          ),
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 32),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                textAlign: TextAlign.right,
+                style: TextStyle(
+                  color: textColor ?? Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w400,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            effectiveLeading,
+          ],
         ),
       ),
     );

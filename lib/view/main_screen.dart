@@ -1,3 +1,4 @@
+import 'package:fiberlux_new_app/view/contactos_screen.dart';
 import 'package:fiberlux_new_app/widgets/custom_bottomNavBar.dart';
 
 import 'preguntas_respuestas.dart';
@@ -18,60 +19,56 @@ class MainScreen extends StatefulWidget {
 }
 
 class _MainScreenState extends State<MainScreen> {
-  int _currentIndex = 2;
+  int _currentIndex = 0;
   String? _entidadFilter;
-
-  // ⬇️ clave para acceder a EntidadDashboardState.refresh()
   final _entidadKey = GlobalKey<EntidadDashboardState>();
 
-  // Define aquí las pantallas que quieres mostrar.
   List<Widget> get _screens => [
-    const QAPantalla(),
-    const TicketsScreen(),
-    DashboardWidget(onStatusTap: _handleEntidadStatusTap),
+    DashboardWidget(onStatusTap: _handleEntidadStatusTap), // 0(Home)
     EntidadDashboard(
-      key: _entidadKey, // ⬅️ usa la key aquí
+      // 3 (Entidad)
+      key: _entidadKey,
       initialStatus: _entidadFilter,
       onStatusTap: _handleEntidadStatusTap,
     ),
-    const FacturacionScreen(),
+    const TicketsScreen(), // 2
+    // const FacturacionScreen(), // 4
+    const ContactosScreen(), // 5 👈 NUEVO (Contactos)
+    const QAPantalla(), // 1
   ];
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, result) async {
-        if (!didPop) {
-          final shouldExit = await _showExitDialog();
-          if (shouldExit && context.mounted) {
-            SystemNavigator.pop();
-          }
-        }
-      },
-      child: Scaffold(
-        body: IndexedStack(index: _currentIndex, children: _screens),
-        bottomNavigationBar: CustomBottomNavBar(
-          currentIndex: _currentIndex,
-          onTap: (index) {
-            if (index == 3) {
-              // Entrar por navbar => SIN filtro
-              setState(() {
-                _entidadFilter = null;
-                _currentIndex = 3;
-              });
-
-              // Espera al frame y aplica el estado dentro de Entidad
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                _entidadKey.currentState
-                    ?.refresh(); // usa widget.initialStatus (null)
-              });
-              return;
+    return SafeArea(
+      child: PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, result) async {
+          if (!didPop) {
+            final shouldExit = await _showExitDialog();
+            if (shouldExit && context.mounted) {
+              SystemNavigator.pop();
             }
-
-            // Otras pestañas
-            setState(() => _currentIndex = index);
-          },
+          }
+        },
+        child: Scaffold(
+          body: IndexedStack(index: _currentIndex, children: _screens),
+          bottomNavigationBar: CustomBottomNavBar(
+            currentIndex: _currentIndex,
+            onTap: (index) {
+              if (index == 3) {
+                setState(() {
+                  _entidadFilter = null;
+                  _currentIndex = 3;
+                });
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  _entidadKey.currentState?.refresh();
+                });
+                return;
+              }
+              // Contactos (5) y demás tabs
+              setState(() => _currentIndex = index);
+            },
+          ),
         ),
       ),
     );
@@ -79,8 +76,8 @@ class _MainScreenState extends State<MainScreen> {
 
   void _handleEntidadStatusTap(String status) {
     setState(() {
-      _entidadFilter = status; // actualiza el filtro
-      _currentIndex = 3; // salta a la pestaña de Entidades
+      _entidadFilter = status;
+      _currentIndex = 1;
     });
   }
 

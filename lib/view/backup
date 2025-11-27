@@ -1,5 +1,1408 @@
 import 'package:fiberlux_new_app/widgets/buildAppBarNotifications/buildappbarnotifications.dart';
 import 'package:fiberlux_new_app/widgets/menu.dart';
+
+import '../providers/SessionProvider.dart';
+import '../providers/graph_socket_provider.dart'; // ⬅️ IMPORTANTE
+import 'login.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+
+// ========================= Direcciones detectadas (modelo) =========================
+class _DetectedAddress {
+  final String direccion;
+  final String distrito;
+  final String provincia;
+  final String dpto;
+  final String? ruc;
+  final String? razon;
+  final String? idServicio;
+  final Map<String, dynamic> raw;
+
+  const _DetectedAddress({
+    required this.direccion,
+    required this.distrito,
+    required this.provincia,
+    required this.dpto,
+    this.ruc,
+    this.razon,
+    this.idServicio,
+    required this.raw,
+  });
+}
+
+// ========================= Transformación a vista =========================
+class _TicketView {
+  final String code;
+  final String date; // formateada dd/MM/yy
+  final int affectedStores;
+  final String issueType; // 2 líneas mayúsculas
+  final String status;
+  final bool isActive;
+  final DateTime? createdAt;
+
+  const _TicketView({
+    required this.code,
+    required this.date,
+    required this.affectedStores,
+    required this.issueType,
+    required this.status,
+    required this.isActive,
+    required this.createdAt,
+  });
+}
+
+class TicketsScreen extends StatefulWidget {
+  const TicketsScreen({Key? key}) : super(key: key);
+
+  @override
+  State<TicketsScreen> createState() => _TicketsScreenState();
+}
+
+class _TicketsScreenState extends State<TicketsScreen> {
+  bool _showHistory = false;
+  bool hasNotifications = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {});
+  }
+
+  // ========================= Helpers de formato =========================
+  String _twoLineUpper(String? s) {
+    final t = (s ?? '').trim();
+    if (t.isEmpty) return 'TICKET';
+    final up = t.toUpperCase();
+    final idx = up.indexOf(' ');
+    if (idx > 0) {
+      // dos líneas: primera palabra \n resto
+      return '${up.substring(0, idx)}\n${up.substring(idx + 1)}';
+    }
+    return up;
+  }
+
+  bool _isActiveStatus(String? estado) {
+    final e = (estado ?? '').toLowerCase();
+    if (e.isEmpty) return true;
+    final closed = ['solucion', 'resuelt', 'cerr', 'ok', 'cancel'];
+    return !closed.any(e.contains);
+  }
+
+  DateTime? _parseAfectadoDate(String? raw) {
+    if (raw == null || raw.trim().isEmpty) return null;
+    final s = raw.trim();
+
+    // Formato típico: "dd-MM-yyyy HH:mm:ss-0500"
+    final re = RegExp(
+      r'^(\d{2})-(\d{2})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})([+-]\d{2})(\d{2})$',
+    );
+    final m = re.firstMatch(s);
+    if (m != null) {
+      final dd = m.group(1);
+      final MM = m.group(2);
+      final yyyy = m.group(3);
+      final hh = m.group(4);
+      final mm = m.group(5);
+      final ss = m.group(6);
+      final tzH = m.group(7); // +05 / -05
+      final tzM = m.group(8); // 00 / 30, etc.
+      final iso =
+          '$yyyy-$MM-$dd'
+          'T$hh:$mm:$ss'
+          '${tzH!}:${tzM!}';
+      try {
+        return DateTime.parse(iso);
+      } catch (_) {}
+    }
+
+    // Intento genérico
+    try {
+      // normalizar -0500 -> -05:00
+      String z = s;
+      final zre = RegExp(r'([+-]\d{2})(\d{2})$');
+      if (zre.hasMatch(z)) {
+        z = z.replaceAllMapped(zre, (m) => '${m.group(1)}:${m.group(2)}');
+      }
+      return DateTime.tryParse(z);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _fmtDDMMYY(DateTime? dt, {String fallback = ''}) {
+    if (dt == null) return fallback;
+    final d = dt.day.toString().padLeft(2, '0');
+    final m = dt.month.toString().padLeft(2, '0');
+    final y = (dt.year % 100).toString().padLeft(2, '0');
+    return '$d/$m/$y';
+  }
+
+  String _monthNameEs(int m) {
+    const meses = [
+      '', // 0
+      'Enero',
+      'Febrero',
+      'Marzo',
+      'Abril',
+      'Mayo',
+      'Junio',
+      'Julio',
+      'Agosto',
+      'Septiembre',
+      'Octubre',
+      'Noviembre',
+      'Diciembre',
+    ];
+    if (m < 1 || m > 12) return '';
+    return meses[m];
+  }
+
+  // Extrae y normaliza direcciones desde g.acordeon (y mapea RUC/Razón Social)
+  List<_DetectedAddress> _harvestDetectedAddresses(GraphSocketProvider g) {
+    final out = <_DetectedAddress>[];
+    final seen = <String>{};
+
+    void addFromItem(Map it) {
+      final mm = Map<String, dynamic>.from(it);
+      final dirMap = (mm['direccion'] is Map)
+          ? Map<String, dynamic>.from(mm['direccion'])
+          : const {};
+
+      String dir = (dirMap['direccion'] ?? mm['direccionodoo'] ?? '')
+          .toString()
+          .trim();
+      String dist = (dirMap['distrito'] ?? mm['distritoodoo'] ?? '')
+          .toString()
+          .trim();
+      String prov = (dirMap['provincia'] ?? mm['provinciaodoo'] ?? '')
+          .toString()
+          .trim();
+      String dpto = (dirMap['departamento'] ?? mm['dptoodoo'] ?? '')
+          .toString()
+          .trim();
+
+      if (dir.isEmpty && dist.isEmpty && prov.isEmpty && dpto.isEmpty) return;
+
+      final key =
+          '${dir.toLowerCase()}|${dist.toLowerCase()}|${prov.toLowerCase()}|${dpto.toLowerCase()}';
+      if (seen.contains(key)) return;
+      seen.add(key);
+
+      final String? ruc =
+          (mm['RUC'] ??
+                  mm['ruc'] ??
+                  mm['cliente_ruc'] ??
+                  mm['ruc_cliente'] ??
+                  g.resumen['RUC'] ??
+                  g.resumen['ruc'])
+              ?.toString();
+
+      String? razon;
+      // a) directa
+      final direct =
+          (mm['Razon_Social'] ??
+          mm['Razon Social'] ??
+          mm['razon'] ??
+          mm['razonsocial'] ??
+          mm['cliente_nombre']);
+      if (direct != null && direct.toString().trim().isNotEmpty) {
+        razon = direct.toString().trim();
+      } else if (ruc != null && ruc.isNotEmpty) {
+        // b) mapa RUC -> Razón
+        final mapRaz = Map<String, dynamic>.from(
+          (g.resumen['RUCs_Razones_Map'] as Map?) ?? const {},
+        );
+        final byMap = mapRaz[ruc];
+        if (byMap != null && byMap.toString().trim().isNotEmpty)
+          razon = byMap.toString().trim();
+
+        // c) lista “bonita”
+        if (razon == null) {
+          for (final e in g.rucsRazonesList) {
+            final eruc = (e['ruc'] ?? e['RUC'] ?? '').toString();
+            if (eruc == ruc) {
+              final name =
+                  (e['nombre'] ??
+                          e['razon'] ??
+                          e['Razon_Social'] ??
+                          e['Razon Social'])
+                      ?.toString();
+              if (name != null && name.trim().isNotEmpty) {
+                razon = name.trim();
+                break;
+              }
+            }
+          }
+        }
+        // d) fallback si el RUC actual coincide con resumen
+        if (razon == null && (g.ruc == ruc)) {
+          final single =
+              (g.resumen['Razon_Social'] ??
+                      g.resumen['Razon Social'] ??
+                      g.resumen['razon_social'])
+                  ?.toString();
+          if (single != null && single.trim().isNotEmpty) razon = single.trim();
+        }
+      }
+
+      out.add(
+        _DetectedAddress(
+          direccion: dir.isEmpty ? 'Sin dirección' : dir,
+          distrito: dist,
+          provincia: prov,
+          dpto: dpto,
+          ruc: (ruc ?? '').isEmpty ? null : ruc,
+          razon: razon,
+          idServicio: (mm['ID_Servicio'] ?? mm['idservicio'] ?? '').toString(),
+          raw: mm,
+        ),
+      );
+    }
+
+    // Recorre acordeón del socket
+    if (g.acordeon is Map) {
+      g.acordeon.forEach((_, value) {
+        final items = (value is List)
+            ? value
+            : (value is Map ? [value] : const []);
+        for (final it in items) {
+          if (it is Map) addFromItem(it);
+        }
+      });
+    }
+
+    // Orden pedido: distrito → provincia → departamento → dirección
+    out.sort((a, b) {
+      final c1 = a.distrito.compareTo(b.distrito);
+      if (c1 != 0) return c1;
+      final c2 = a.provincia.compareTo(b.provincia);
+      if (c2 != 0) return c2;
+      final c3 = a.dpto.compareTo(b.dpto);
+      if (c3 != 0) return c3;
+      return a.direccion.compareTo(b.direccion);
+    });
+
+    return out;
+  }
+
+  List<_TicketView> _mapAfectadosToViews(dynamic afectadosDyn) {
+    final list = (afectadosDyn is List) ? afectadosDyn : const [];
+    final tmp = <_TicketView>[];
+    final seen = <String>{};
+
+    for (final t in list) {
+      if (t is! Map) continue;
+
+      final code = (t['NroTicket'] ?? t['ticket_id'] ?? t['id'] ?? '')
+          .toString();
+      if (code.isEmpty || seen.contains(code)) continue; // evitar duplicados
+      seen.add(code);
+
+      final estado = (t['EstadoTicket'] ?? t['estado'] ?? '').toString();
+      final tipo = (t['Tipo'] ?? t['tipo_ticket_nombre'] ?? 'Ticket')
+          .toString();
+
+      final created = _parseAfectadoDate(t['FechaCreacion']?.toString());
+      final date = _fmtDDMMYY(
+        created,
+        fallback: (t['FechaCreacion'] ?? '').toString(),
+      );
+
+      int affected = 0;
+      if (t['nroServicios'] is num) {
+        affected = (t['nroServicios'] as num).toInt();
+      } else if (t['ServiciosAfectados'] is List) {
+        affected = (t['ServiciosAfectados'] as List).length;
+      }
+
+      tmp.add(
+        _TicketView(
+          code: code,
+          date: date,
+          affectedStores: affected,
+          issueType: _twoLineUpper(tipo),
+          status: estado.isEmpty ? '—' : estado,
+          isActive: _isActiveStatus(estado),
+          createdAt: created,
+        ),
+      );
+    }
+
+    // ordenar por fecha (recientes primero)
+    tmp.sort((a, b) {
+      final ad = a.createdAt;
+      final bd = b.createdAt;
+      if (ad == null && bd == null) return 0;
+      if (ad == null) return 1;
+      if (bd == null) return -1;
+      return bd.compareTo(ad);
+    });
+
+    return tmp;
+  }
+
+  // ⬇️ NUEVO: POST al backend (ajusta base/endpoint si lo necesitas)
+  Future<Map<String, dynamic>> _sendTicket({
+    required SessionProvider sp,
+    required String ruc,
+    required String razon,
+    required String direccion,
+    required String motivo,
+    required String telefono,
+    required String nombre,
+  }) async {
+    final base = ('COLOCAR API PRETICKET DESPUES DE PROBAR')
+        .toString()
+        .replaceAll(RegExp(r'/$'), '');
+    final uri = Uri.parse(
+      '$base/ticket/',
+    ); // ← si tu endpoint es /api/ticket/, cambia aquí
+
+    final headers = <String, String>{'Content-Type': 'application/json'};
+
+    final body = jsonEncode({
+      'ruc': ruc,
+      'razon_social': razon,
+      'direccion': direccion,
+      'motivo': motivo,
+      'telefono': telefono,
+      'nombre': nombre,
+    });
+
+    final resp = await http.post(uri, headers: headers, body: body);
+
+    if (resp.statusCode >= 200 && resp.statusCode < 300) {
+      return jsonDecode(resp.body.isEmpty ? '{}' : resp.body)
+          as Map<String, dynamic>;
+    }
+
+    throw Exception('Error ${resp.statusCode}: ${resp.body}');
+  }
+
+  // ⬇️ NUEVO: hoja modal con formulario
+  void _openSendTicketSheet() {
+    final session = context.read<SessionProvider>();
+    final g = context.read<GraphSocketProvider>();
+    final addrsAll = _harvestDetectedAddresses(g);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      builder: (ctx) {
+        // Controllers de campos
+        final nombreCtrl = TextEditingController();
+        final telefonoCtrl = TextEditingController();
+        final motivoCtrl = TextEditingController();
+
+        // Estado del selector
+        String? selDpto;
+        String? selProv;
+        String? selDist;
+        _DetectedAddress? selAddr;
+
+        // Autocompletar según sesión o primera dirección
+        String ruc =
+            (session.ruc ??
+                    (addrsAll.isNotEmpty ? (addrsAll.first.ruc ?? '') : ''))
+                .toString();
+        String razon = (addrsAll.isNotEmpty
+            ? (addrsAll.first.razon ?? '')
+            : '');
+
+        // Funciones de extracción únicas ordenadas
+        List<String> _uniq(Iterable<String> it) =>
+            it.toSet().where((s) => s.trim().isNotEmpty).toList()..sort();
+
+        return StatefulBuilder(
+          builder: (ctx, setState) {
+            // Cascada: dptos -> provincias -> distritos
+            final dptos = _uniq(addrsAll.map((e) => e.dpto));
+            final provs = _uniq(
+              addrsAll
+                  .where(
+                    (e) =>
+                        selDpto == null ||
+                        selDpto!.isEmpty ||
+                        e.dpto == selDpto,
+                  )
+                  .map((e) => e.provincia),
+            );
+            final dists = _uniq(
+              addrsAll
+                  .where(
+                    (e) =>
+                        (selDpto == null ||
+                            selDpto!.isEmpty ||
+                            e.dpto == selDpto) &&
+                        (selProv == null ||
+                            selProv!.isEmpty ||
+                            e.provincia == selProv),
+                  )
+                  .map((e) => e.distrito),
+            );
+
+            // Lista visible de direcciones según filtros
+            final visible = addrsAll.where((e) {
+              final okD =
+                  (selDpto == null || selDpto!.isEmpty || e.dpto == selDpto);
+              final okP =
+                  (selProv == null ||
+                  selProv!.isEmpty ||
+                  e.provincia == selProv);
+              final okT =
+                  (selDist == null ||
+                  selDist!.isEmpty ||
+                  e.distrito == selDist);
+              return okD && okP && okT;
+            }).toList();
+
+            final bottom = MediaQuery.of(ctx).viewInsets.bottom;
+
+            Future<void> _submit() async {
+              if (selAddr == null) return;
+
+              final payload = {
+                'ruc': ruc.trim(),
+                'razonSocial': razon.trim(),
+                'direccion': selAddr!.direccion,
+                'distrito': selAddr!.distrito,
+                'provincia': selAddr!.provincia,
+                'departamento': selAddr!.dpto,
+                'motivo': motivoCtrl.text.trim(),
+                'telefono': telefonoCtrl.text.trim(),
+                'nombre': nombreCtrl.text.trim(),
+                'idServicio': selAddr!.idServicio,
+              };
+
+              Navigator.pop(ctx); // cerrar sheet primero
+
+              // TODO: integra tu POST real aquí
+              // await YourApi.createTicket(payload);
+
+              if (mounted) {
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(const SnackBar(content: Text('Ticket enviado')));
+              }
+            }
+
+            final canSend =
+                selAddr != null &&
+                (motivoCtrl.text.trim().isNotEmpty) &&
+                (telefonoCtrl.text.trim().isNotEmpty) &&
+                (nombreCtrl.text.trim().isNotEmpty);
+
+            return Padding(
+              padding: EdgeInsets.only(bottom: bottom),
+              child: FractionallySizedBox(
+                heightFactor: 0.92,
+                child: Column(
+                  children: [
+                    // Header
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 14, 8, 6),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.add_task, color: Color(0xFF8B4A9C)),
+                          const SizedBox(width: 8),
+                          const Expanded(
+                            child: Text(
+                              'Enviar Ticket',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close),
+                            onPressed: () => Navigator.pop(ctx),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
+
+                    Expanded(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextFormField(
+                                    initialValue: ruc,
+                                    readOnly: true,
+                                    decoration: const InputDecoration(
+                                      labelText: 'RUC',
+                                      prefixIcon: Icon(Icons.badge_outlined),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: TextFormField(
+                                    initialValue: razon,
+                                    readOnly: true,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Razón social',
+                                      prefixIcon: Icon(Icons.business),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+
+                            // CASCADA: Departamento → Provincia → Distrito
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: DropdownButtonFormField<String>(
+                                    value: selDpto?.isEmpty == true
+                                        ? null
+                                        : selDpto,
+                                    isExpanded: true,
+                                    items: [
+                                      const DropdownMenuItem(
+                                        value: '',
+                                        child: Text('Todos los departamentos'),
+                                      ),
+                                      ...dptos.map(
+                                        (d) => DropdownMenuItem(
+                                          value: d,
+                                          child: Text(d.isEmpty ? '—' : d),
+                                        ),
+                                      ),
+                                    ],
+                                    onChanged: (v) {
+                                      setState(() {
+                                        selDpto = (v == null || v.isEmpty)
+                                            ? null
+                                            : v;
+                                        selProv = null;
+                                        selDist = null;
+                                      });
+                                    },
+                                    decoration: const InputDecoration(
+                                      labelText: 'Departamento',
+                                      prefixIcon: Icon(Icons.public),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: DropdownButtonFormField<String>(
+                                    value: selProv?.isEmpty == true
+                                        ? null
+                                        : selProv,
+                                    isExpanded: true,
+                                    items: [
+                                      const DropdownMenuItem(
+                                        value: '',
+                                        child: Text('Todas las provincias'),
+                                      ),
+                                      ...provs.map(
+                                        (p) => DropdownMenuItem(
+                                          value: p,
+                                          child: Text(p.isEmpty ? '—' : p),
+                                        ),
+                                      ),
+                                    ],
+                                    onChanged: (v) {
+                                      setState(() {
+                                        selProv = (v == null || v.isEmpty)
+                                            ? null
+                                            : v;
+                                        selDist = null;
+                                      });
+                                    },
+                                    decoration: const InputDecoration(
+                                      labelText: 'Provincia',
+                                      prefixIcon: Icon(Icons.location_city),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: DropdownButtonFormField<String>(
+                                    value: selDist?.isEmpty == true
+                                        ? null
+                                        : selDist,
+                                    isExpanded: true,
+                                    items: [
+                                      const DropdownMenuItem(
+                                        value: '',
+                                        child: Text('Todos los distritos'),
+                                      ),
+                                      ...dists.map(
+                                        (t) => DropdownMenuItem(
+                                          value: t,
+                                          child: Text(t.isEmpty ? '—' : t),
+                                        ),
+                                      ),
+                                    ],
+                                    onChanged: (v) {
+                                      setState(() {
+                                        selDist = (v == null || v.isEmpty)
+                                            ? null
+                                            : v;
+                                      });
+                                    },
+                                    decoration: const InputDecoration(
+                                      labelText: 'Distrito',
+                                      prefixIcon: Icon(Icons.apartment),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 14),
+
+                            // Lista de direcciones visibles
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 8,
+                              ),
+                              decoration: BoxDecoration(
+                                border: Border.all(color: Colors.grey.shade300),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.place_outlined,
+                                        size: 20,
+                                        color: Color(0xFF8B4A9C),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        'Direcciones detectadas (${visible.length})',
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
+                                  if (visible.isEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.all(8.0),
+                                      child: Text(
+                                        'No hay direcciones para los filtros seleccionados.',
+                                        style: TextStyle(
+                                          color: Colors.grey[600],
+                                        ),
+                                      ),
+                                    )
+                                  else
+                                    ...visible.map((a) {
+                                      final subtitle = [
+                                        if (a.distrito.isNotEmpty) a.distrito,
+                                        if (a.provincia.isNotEmpty) a.provincia,
+                                        if (a.dpto.isNotEmpty) a.dpto,
+                                      ].join(' • ');
+                                      return RadioListTile<_DetectedAddress>(
+                                        value: a,
+                                        groupValue: selAddr,
+                                        dense: true,
+                                        contentPadding: EdgeInsets.zero,
+                                        title: Text(
+                                          a.direccion,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        subtitle: Text(
+                                          subtitle,
+                                          style: TextStyle(
+                                            color: Colors.grey[600],
+                                          ),
+                                        ),
+                                        secondary: const Icon(
+                                          Icons.my_location_outlined,
+                                        ),
+                                        onChanged: (v) {
+                                          if (v == null) return;
+                                          setState(() {
+                                            selAddr = v;
+                                            // Autocompletar RUC/Razón según la dirección elegida
+                                            ruc = (v.ruc ?? ruc);
+                                            razon = (v.razon ?? razon);
+                                          });
+                                        },
+                                      );
+                                    }).toList(),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+
+                            // Motivo, Teléfono, Nombre
+                            TextFormField(
+                              controller: motivoCtrl,
+                              decoration: const InputDecoration(
+                                labelText: 'Motivo',
+                                prefixIcon: Icon(Icons.edit_note_outlined),
+                              ),
+                              onChanged: (_) => setState(() {}),
+                            ),
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextFormField(
+                                    controller: telefonoCtrl,
+                                    keyboardType: TextInputType.phone,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Número de teléfono',
+                                      prefixIcon: Icon(Icons.call_outlined),
+                                    ),
+                                    onChanged: (_) => setState(() {}),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: TextFormField(
+                                    controller: nombreCtrl,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Nombre',
+                                      prefixIcon: Icon(Icons.person_outline),
+                                    ),
+                                    onChanged: (_) => setState(() {}),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+
+                            // Info de lo seleccionado
+                            if (selAddr != null)
+                              Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: const Color(
+                                    0xFF8B4A9C,
+                                  ).withOpacity(0.06),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: const Color(
+                                      0xFF8B4A9C,
+                                    ).withOpacity(0.2),
+                                  ),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'Resumen de selección',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text('RUC: ${ruc.isEmpty ? '—' : ruc}'),
+                                    Text(
+                                      'Razón social: ${razon.isEmpty ? '—' : razon}',
+                                    ),
+                                    Text('Dirección: ${selAddr!.direccion}'),
+                                    Text(
+                                      'Ubicación: '
+                                      '${selAddr!.distrito} • ${selAddr!.provincia} • ${selAddr!.dpto}',
+                                    ),
+                                  ],
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    // Enviar
+                    SafeArea(
+                      top: false,
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                        child: SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: canSend ? _submit : null,
+                            icon: const Icon(Icons.send),
+                            label: const Text('Enviar'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF8B4A9C),
+                              foregroundColor: Colors.white,
+                              disabledBackgroundColor: Colors.grey.shade300,
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final session = Provider.of<SessionProvider>(context);
+    if (session.ruc == null) {
+      return Scaffold(
+        backgroundColor: Colors.grey[200],
+        endDrawer: FiberluxDrawer(),
+        appBar: AppBar(
+          backgroundColor: Colors.white,
+          scrolledUnderElevation: 0,
+          title: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Image.asset('assets/logos/logo_pequeño.png', height: 40),
+                    const SizedBox(width: 12),
+                  ],
+                ),
+                Row(
+                  children: [
+                    Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        IconButton(
+                          icon: Icon(
+                            NotificationOverlay.isShowing
+                                ? Icons.notifications
+                                : Icons.notifications_outlined,
+                            color: Colors.purple,
+                            size: 28,
+                          ),
+                          onPressed: () {
+                            if (NotificationOverlay.isShowing) {
+                              NotificationOverlay.hide();
+                            } else {
+                              NotificationOverlay.show(
+                                context,
+                                onClose: () {
+                                  setState(() {
+                                    hasNotifications = false;
+                                  });
+                                },
+                              );
+                            }
+                          },
+                        ),
+                        if (hasNotifications)
+                          Positioned(
+                            top: 10,
+                            right: 10,
+                            child: Container(
+                              width: 10,
+                              height: 10,
+                              decoration: const BoxDecoration(
+                                color: Colors.red,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          automaticallyImplyLeading: false,
+        ),
+        body: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 24.0,
+              vertical: 16.0,
+            ),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12.0),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.purple.withOpacity(0.2),
+                  blurRadius: 15.0,
+                  offset: const Offset(0, 5),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.lock_outline,
+                  size: 48.0,
+                  color: Colors.purple,
+                ),
+                const SizedBox(height: 16.0),
+                Text(
+                  'Acceso restringido',
+                  style: TextStyle(
+                    fontSize: 22.0,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.grey[800],
+                  ),
+                ),
+                const SizedBox(height: 8.0),
+                Text(
+                  'Verifica tu cuenta para continuar.',
+                  style: TextStyle(fontSize: 16.0, color: Colors.grey[600]),
+                ),
+                const SizedBox(height: 24.0),
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.pushAndRemoveUntil(
+                      context,
+                      MaterialPageRoute(builder: (_) => const LoginScreen()),
+                      (route) => false,
+                    );
+                  },
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 32.0,
+                      vertical: 12.0,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8.0),
+                    ),
+                  ),
+                  child: const Text(
+                    'Verificar ahora',
+                    style: TextStyle(
+                      fontSize: 16.0,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // =================== Tickets desde el socket: g.afectados ===================
+    final g = context.watch<GraphSocketProvider>();
+    final views = _mapAfectadosToViews(g.afectados);
+    final active = views.where((v) => v.isActive).toList();
+    final history = views.where((v) => !v.isActive).toList();
+
+    // Agrupar historial por mes/año
+    Map<String, List<_TicketView>> historyByMonth = {};
+    for (final v in history) {
+      final dt = v.createdAt;
+      final key = (dt == null)
+          ? 'Sin fecha'
+          : '${dt.year}-${dt.month.toString().padLeft(2, '0')}';
+      (historyByMonth[key] ??= []).add(v);
+    }
+
+    // Ordenar claves de historial descendente por fecha
+    final sortedHistKeys = historyByMonth.keys.toList()
+      ..sort((a, b) => b.compareTo(a));
+
+    return Scaffold(
+      backgroundColor: Colors.white,
+      endDrawer: FiberluxDrawer(),
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        scrolledUnderElevation: 0,
+        title: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Image.asset('assets/logos/logo_pequeño.png', height: 40),
+                  const SizedBox(width: 12),
+                ],
+              ),
+              Row(
+                children: [
+                  Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      IconButton(
+                        icon: Icon(
+                          NotificationOverlay.isShowing
+                              ? Icons.notifications
+                              : Icons.notifications_outlined,
+                          color: Colors.purple,
+                          size: 28,
+                        ),
+                        onPressed: () {
+                          if (NotificationOverlay.isShowing) {
+                            NotificationOverlay.hide();
+                          } else {
+                            NotificationOverlay.show(
+                              context,
+                              onClose: () {
+                                setState(() {
+                                  hasNotifications = false;
+                                });
+                              },
+                            );
+                          }
+                        },
+                      ),
+                      if (hasNotifications)
+                        Positioned(
+                          top: 10,
+                          right: 10,
+                          child: Container(
+                            width: 10,
+                            height: 10,
+                            decoration: const BoxDecoration(
+                              color: Colors.red,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        automaticallyImplyLeading: false,
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        heroTag: 'fab-enviar-ticket',
+        onPressed: _openSendTicketSheet,
+        icon: const Icon(Icons.add),
+        label: const Text('Enviar ticket'),
+        backgroundColor: const Color(0xFF8B4A9C),
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Text(
+                  'Tickets',
+                  style: TextStyle(
+                    fontFamily: 'Poppins',
+                    fontSize: 25,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.grey[800],
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+
+              Center(
+                child: Text(
+                  g.isConnected
+                      ? 'En caso no mostrarse su ticket, comunicarse con soporte.'
+                      : 'Mostrando tickets (sin conexión en vivo)',
+                  style: TextStyle(
+                    fontStyle: FontStyle.italic,
+                    fontFamily: 'Poppins',
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.grey[800],
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+              const SizedBox(height: 30),
+
+              // =================== Listado dinámico ===================
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      // --------- Activos ----------
+                      if (active.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 12.0),
+                          child: Text(
+                            'No hay tickets activos',
+                            style: TextStyle(color: Colors.grey[600]),
+                          ),
+                        )
+                      else
+                        ...active.map(
+                          (t) => Padding(
+                            padding: const EdgeInsets.only(bottom: 12),
+                            child: TicketCard(
+                              code: t.code,
+                              date: t.date,
+                              affectedStores: t.affectedStores,
+                              issueType: t.issueType,
+                              status: t.status,
+                              isActive: true,
+                            ),
+                          ),
+                        ),
+
+                      // ---------- Separador / Historial -----------
+                      const SizedBox(height: 8),
+                      GestureDetector(
+                        onTap: () =>
+                            setState(() => _showHistory = !_showHistory),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Expanded(
+                              child: Divider(
+                                color: Color.fromARGB(255, 185, 31, 167),
+                                thickness: 1,
+                              ),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                              ),
+                              child: Row(
+                                children: [
+                                  const Text(
+                                    'Informes de tickets',
+                                    style: TextStyle(
+                                      color: Color.fromARGB(255, 185, 31, 167),
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                  Icon(
+                                    _showHistory
+                                        ? Icons.keyboard_arrow_up
+                                        : Icons.keyboard_arrow_down,
+                                    color: const Color.fromARGB(
+                                      255,
+                                      185,
+                                      31,
+                                      167,
+                                    ),
+                                    size: 20,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const Expanded(
+                              child: Divider(
+                                color: Color.fromARGB(255, 185, 31, 167),
+                                thickness: 1,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      if (_showHistory) ...[
+                        const SizedBox(height: 16),
+
+                        if (history.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8.0),
+                            child: Text(
+                              'Sin Informes de tickets previos',
+                              style: TextStyle(color: Colors.grey[600]),
+                            ),
+                          )
+                        else
+                          ...sortedHistKeys.expand((key) {
+                            final group = historyByMonth[key]!;
+                            // Header del mes
+                            DateTime? dt = group.first.createdAt;
+                            final header = (dt == null)
+                                ? 'Sin fecha'
+                                : '${_monthNameEs(dt.month)} ${dt.year}';
+                            return [
+                              Row(
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 8.0),
+                                    child: Text(
+                                      header,
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey[500],
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Container(
+                                      height: 1,
+                                      color: Colors.grey[300],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 16),
+                              ...group.map(
+                                (t) => Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: TicketCard(
+                                    code: t.code,
+                                    date: t.date,
+                                    affectedStores: t.affectedStores,
+                                    issueType: t.issueType,
+                                    status: t.status,
+                                    isActive: false,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                            ];
+                          }),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class TicketCard extends StatelessWidget {
+  final String code;
+  final String date;
+  final int affectedStores;
+  final String issueType;
+  final String status;
+  final bool isActive;
+
+  const TicketCard({
+    Key? key,
+    required this.code,
+    required this.date,
+    required this.affectedStores,
+    required this.issueType,
+    required this.status,
+    required this.isActive,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: isActive
+              ? const Color.fromARGB(255, 185, 31, 167)
+              : Colors.grey,
+          width: 1,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Row(
+          children: [
+            // Left side - code and details
+            Expanded(
+              flex: 7,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 1,
+                      horizontal: 12,
+                    ),
+                    decoration: BoxDecoration(
+                      color: isActive
+                          ? const Color.fromARGB(255, 185, 31, 167)
+                          : Colors.grey,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      'TK. $code',
+                      style: const TextStyle(color: Colors.white, fontSize: 17),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '$affectedStores tiendas afectadas',
+                    style: TextStyle(
+                      color: isActive ? Colors.black : Colors.grey,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    date,
+                    style: TextStyle(color: Colors.grey[500], fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
+
+            // Right side - issue type and status
+            Expanded(
+              flex: 5,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    issueType,
+                    style: TextStyle(
+                      color: Colors.grey[600],
+                      fontSize: 16,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    textAlign: TextAlign.right,
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    status,
+                    style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                    textAlign: TextAlign.right,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+----------
+
+import 'package:fiberlux_new_app/widgets/buildAppBarNotifications/buildappbarnotifications.dart';
+import 'package:fiberlux_new_app/widgets/menu.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';

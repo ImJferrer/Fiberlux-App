@@ -1,3 +1,4 @@
+import 'package:fiberlux_new_app/providers/notifications_provider.dart';
 import 'package:fiberlux_new_app/widgets/buildAppBarNotifications/buildappbarnotifications.dart';
 import 'package:fiberlux_new_app/widgets/custom_loader.dart';
 import 'package:fiberlux_new_app/widgets/menu.dart';
@@ -170,7 +171,6 @@ class Promotion {
 // ViewModel actualizado para cargar promociones desde Firestore
 class DashboardViewModel extends ChangeNotifier {
   String currentLocation = '';
-  bool hasNotifications = true;
   List<Promotion> promotions = [];
   bool isLoading = true;
   String? errorMessage;
@@ -263,11 +263,6 @@ class DashboardViewModel extends ChangeNotifier {
       errorMessage = 'No se pudieron cargar las promociones: ${e.toString()}';
       print('Error al cargar promociones: $e');
     }
-    notifyListeners();
-  }
-
-  void handleNotificationTap() {
-    hasNotifications = false;
     notifyListeners();
   }
 }
@@ -403,10 +398,13 @@ class _DashboardWidgetState extends State<DashboardWidget>
 
   Widget _buildAppBar(BuildContext context, DashboardViewModel viewModel) {
     final session = Provider.of<SessionProvider>(context, listen: false);
+    final notifProv = Provider.of<NotificationsProvider>(context); // 👈 NUEVO
+
     final rawNombre = session.nombre;
     final nombre = (rawNombre == null || rawNombre.trim().isEmpty)
         ? 'Usuario'
         : capitalizeWords(rawNombre);
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 9.0),
       child: Container(
@@ -428,10 +426,12 @@ class _DashboardWidgetState extends State<DashboardWidget>
                   padding: const EdgeInsets.symmetric(horizontal: 10.0),
                   child: Text(
                     '¡Hola, $nombre!',
-                    style: TextStyle(color: Colors.white, fontSize: 15),
+                    style: const TextStyle(color: Colors.white, fontSize: 15),
                   ),
                 ),
               ),
+
+              // 🔔 Campanita de notificaciones
               Stack(
                 alignment: Alignment.center,
                 children: [
@@ -440,36 +440,51 @@ class _DashboardWidgetState extends State<DashboardWidget>
                       NotificationOverlay.isShowing
                           ? Icons.notifications
                           : Icons.notifications_outlined,
-                      color: Colors.white,
+                      color: Colors.white, // o tu color
+                      size: 28,
                     ),
                     onPressed: () {
+                      final notifProv = context.read<NotificationsProvider>();
+
                       if (NotificationOverlay.isShowing) {
+                        // Si ya está abierta, la cerramos normal
                         NotificationOverlay.hide();
                       } else {
+                        // 👇 Apenas se abre la campanita, marcamos todas como leídas
+                        notifProv.markAllRead();
+
                         NotificationOverlay.show(
                           context,
+                          // el onClose ahora puede quedar vacío o solo para otras cosas
                           onClose: () {
-                            viewModel.handleNotificationTap();
+                            // aquí ya NO necesitas tocar las notificaciones
                           },
                         );
                       }
                     },
                   ),
-                  if (viewModel.hasNotifications)
-                    Positioned(
-                      top: 10,
-                      right: 10,
-                      child: Container(
-                        width: 10,
-                        height: 10,
-                        decoration: const BoxDecoration(
-                          color: Colors.red,
-                          shape: BoxShape.circle,
+
+                  // 👇 ESTE ES EL PUNTO ROJO GLOBAL
+                  Consumer<NotificationsProvider>(
+                    builder: (_, notifProv, __) {
+                      if (!notifProv.hasUnread) return const SizedBox.shrink();
+                      return Positioned(
+                        top: 10,
+                        right: 10,
+                        child: Container(
+                          width: 10,
+                          height: 10,
+                          decoration: const BoxDecoration(
+                            color: Colors.red,
+                            shape: BoxShape.circle,
+                          ),
                         ),
-                      ),
-                    ),
+                      );
+                    },
+                  ),
                 ],
               ),
+
               Builder(
                 builder: (context) => IconButton(
                   icon: const Icon(Icons.menu, color: Colors.white),
@@ -542,7 +557,7 @@ class _DashboardWidgetState extends State<DashboardWidget>
         _buildCurrentLocation(viewModel),
         Expanded(
           child: Container(
-            width: double.infinity, // Esto es importante
+            width: double.infinity,
             decoration: const BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.only(
@@ -551,29 +566,10 @@ class _DashboardWidgetState extends State<DashboardWidget>
               ),
             ),
             child: ListView(
-              physics:
-                  const AlwaysScrollableScrollPhysics(), // Ayuda con el scroll
+              physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(16),
               children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16.0,
-                    vertical: 8,
-                  ),
-                  child: Text(
-                    "Novedades",
-                    style: TextStyle(
-                      color: Color.fromARGB(255, 185, 31, 167),
-                      fontSize: 16,
-                      fontFamily: 'Poppins',
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ),
-                _buildPromotionCards(viewModel),
-                const SizedBox(height: 16),
-
-                // Condicional para mostrar el gráfico solo si hay servicios
+                // =================== ESTADOS DEL SERVICIO (ARRIBA) ===================
                 if (session.ruc != null) ...[
                   Consumer<GraphSocketProvider>(
                     builder: (_, graphProv, __) {
@@ -591,11 +587,26 @@ class _DashboardWidgetState extends State<DashboardWidget>
                     },
                   ),
                 ] else ...[
-                  SizedBox(
-                    height: 300,
-                    child: _buildAccessRestricted(),
-                  ), // This is likely unconstrained
+                  SizedBox(height: 250, child: _buildAccessRestricted()),
                 ],
+
+                // =================== NOVEDADES (ABAJO) ===================
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 8,
+                  ),
+                  child: Text(
+                    "Novedades",
+                    style: TextStyle(
+                      color: const Color.fromARGB(255, 185, 31, 167),
+                      fontSize: 16,
+                      fontFamily: 'Poppins',
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+                _buildPromotionCards(viewModel),
 
                 const SizedBox(height: 16),
               ],

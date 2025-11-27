@@ -1,12 +1,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-  <!-- Permisos globales -->
-    <uses-permission android:name="android.permission.INTERNET"/>
-
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-
+      <!-- Permisos globales -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 13+ -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Para que el sistema pueda despertar la app al recibir FCM -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Vibración para notificaciones -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <application 
-        android:label="fiberlux_app"
+        android:label="Fiberlux App"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         

@@ -1,6 +1,9 @@
-import '../../models/notifications.dart';
-import '../../view/notification/lanzamientoFiberlux.dart';
+import 'package:fiberlux_new_app/view/preticket_chat_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../../providers/notifications_provider.dart';
+import '../../view/notification/lanzamientoFiberlux.dart';
 
 class NotificationsDropdown extends StatefulWidget {
   final VoidCallback? onClose;
@@ -16,35 +19,6 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
   late AnimationController _animationController;
   late Animation<double> _slideAnimation;
   late Animation<double> _opacityAnimation;
-
-  // Lista de notificaciones con isRead incluido
-  List<NotificationItem> notifications = [
-    NotificationItem(
-      id: '1', // ⭐ Esta es la especial
-      title: '¡La nueva aplicación llegó!',
-      subtitle: 'Enterate de todas las cosas que puede hacer fiberlux para ti',
-      icon: Icons.star,
-      timestamp: DateTime.now().subtract(Duration(minutes: 5)),
-      route: '/launch',
-      isRead: false,
-    ),
-    NotificationItem(
-      id: '2',
-      title: '¡Nuevo descuento!',
-      subtitle: 'Hemos agregado un nuevo descuento para tu empresa',
-      icon: Icons.local_offer_outlined,
-      timestamp: DateTime.now().subtract(Duration(hours: 2)),
-      isRead: false,
-    ),
-    NotificationItem(
-      id: '3',
-      title: 'Ingresa al sorteo de...',
-      subtitle: 'Te brindamos los mejores beneficios para tu empresa',
-      icon: Icons.star_outline,
-      timestamp: DateTime.now().subtract(Duration(days: 1)),
-      isRead: true,
-    ),
-  ];
 
   @override
   void initState() {
@@ -71,43 +45,58 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
     super.dispose();
   }
 
-  void _closeDropdown() async {
+  Future<void> _closeDropdown() async {
     await _animationController.reverse();
     if (widget.onClose != null) {
       widget.onClose!();
     }
   }
 
-  // 🎯 NUEVA NAVEGACIÓN - CORREGIDA SIN DELAY PROBLEMÁTICO
   void _handleNotificationTap(NotificationItem notification) {
-    // Marcar como leída primero
-    if (mounted) {
-      setState(() {
-        final index = notifications.indexWhere((n) => n.id == notification.id);
-        if (index != -1) {
-          notifications[index] = NotificationItem(
-            id: notification.id,
-            title: notification.title,
-            subtitle: notification.subtitle,
-            icon: notification.icon,
-            timestamp: notification.timestamp,
-            route: notification.route,
-            data: notification.data,
-            isRead: true,
-          );
-        }
-      });
+    // Marcar como leída en el provider
+    context.read<NotificationsProvider>().markAsRead(notification.id);
+
+    // 1️⃣ Primero: si es notificación de chat de PRETICKET
+    if (notification.route == 'preticket_chat') {
+      final data = notification.data ?? {};
+
+      final preticketStr =
+          data['preticket']?.toString() ?? data['preticket_id']?.toString();
+      final preticketId = preticketStr != null
+          ? int.tryParse(preticketStr)
+          : null;
+
+      debugPrint(
+        '🧭 [Dropdown] tap preticket_chat, preticketId=$preticketId, data=$data',
+      );
+
+      if (preticketId != null && preticketId > 0) {
+        final navigator = Navigator.of(context);
+
+        // cierro el dropdown ANTES de navegar
+        _closeDropdown();
+
+        navigator.push(
+          MaterialPageRoute(
+            builder: (_) => PreticketChatScreen(
+              preticketId: preticketId,
+              ticketCode: data['ticket_code']?.toString(), // opcional
+            ),
+          ),
+        );
+        return; // 👈 MUY IMPORTANTE: no seguir con la lógica de launch
+      }
     }
 
-    // 🎯 NAVEGACIÓN ESPECIAL PARA LA NOTIFICACIÓN ID '1' - SIN DELAY
-    if (notification.id == '1') {
-      // Guardar el contexto antes de cerrar
+    // 2️⃣ Lógica especial que ya tenías para la notificación "destacada"
+    final shouldLaunch =
+        notification.id == '1' || notification.route == '/launch';
+
+    if (shouldLaunch) {
       final navigatorContext = Navigator.of(context);
 
-      // Cerrar dropdown y navegar inmediatamente
       _closeDropdown();
 
-      // Navegar usando el contexto guardado
       navigatorContext.push(
         PageRouteBuilder(
           pageBuilder: (context, animation, secondaryAnimation) =>
@@ -127,18 +116,20 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
               child: FadeTransition(opacity: animation, child: child),
             );
           },
-          transitionDuration: Duration(milliseconds: 600),
+          transitionDuration: const Duration(milliseconds: 600),
         ),
       );
     } else {
-      // Para otras notificaciones, solo cerrar
       _closeDropdown();
-      print('Notificación normal tapped: ${notification.title}');
+      debugPrint('🔔 Notificación normal tapped: ${notification.title}');
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final notifProv = context.watch<NotificationsProvider>();
+    final notifications = notifProv.notifications;
+
     return Stack(
       children: [
         // Overlay invisible para cerrar al tocar fuera
@@ -185,14 +176,14 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
                             padding: const EdgeInsets.all(16),
                             decoration: BoxDecoration(
                               color: const Color(0xFFA4238E).withOpacity(0.05),
-                              borderRadius: BorderRadius.only(
+                              borderRadius: const BorderRadius.only(
                                 topLeft: Radius.circular(16),
                                 topRight: Radius.circular(16),
                               ),
                             ),
                             child: Row(
                               children: [
-                                Text(
+                                const Text(
                                   'Notificaciones',
                                   style: TextStyle(
                                     fontSize: 18,
@@ -201,10 +192,24 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
                                     fontFamily: 'Poppins',
                                   ),
                                 ),
-                                Spacer(),
-                                if (notifications.any((n) => !n.isRead))
+                                const Spacer(),
+                                if (notifications.isNotEmpty)
+                                  TextButton(
+                                    onPressed: () {
+                                      notifProv.clearAll();
+                                    },
+                                    child: const Text(
+                                      'Eliminar todas',
+                                      style: TextStyle(
+                                        color: Color(0xFFA4238E),
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    ),
+                                  ),
+                                if (notifProv.hasUnread)
                                   Container(
-                                    padding: EdgeInsets.symmetric(
+                                    padding: const EdgeInsets.symmetric(
                                       horizontal: 8,
                                       vertical: 4,
                                     ),
@@ -213,8 +218,8 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
                                       borderRadius: BorderRadius.circular(12),
                                     ),
                                     child: Text(
-                                      '${notifications.where((n) => !n.isRead).length}',
-                                      style: TextStyle(
+                                      '${notifProv.unreadCount}',
+                                      style: const TextStyle(
                                         color: Colors.white,
                                         fontSize: 12,
                                         fontWeight: FontWeight.w600,
@@ -241,20 +246,42 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
                                         ),
                                     itemBuilder: (context, index) {
                                       final notification = notifications[index];
-                                      return _buildNotificationItem(
-                                        notification,
+                                      return Dismissible(
+                                        key: ValueKey(notification.id),
+                                        direction: DismissDirection.endToStart,
+                                        background: Container(
+                                          alignment: Alignment.centerRight,
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 20,
+                                          ),
+                                          color: Colors.redAccent,
+                                          child: const Icon(
+                                            Icons.delete,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                        onDismissed: (_) {
+                                          context
+                                              .read<NotificationsProvider>()
+                                              .removeNotification(
+                                                notification.id,
+                                              );
+                                        },
+                                        child: _buildNotificationItem(
+                                          notification,
+                                        ),
                                       );
                                     },
                                   ),
                           ),
 
-                          // Footer opcional
-                          if (notifications.length > 3)
+                          // Footer: Ver todas las notificaciones
+                          if (notifications.length > 0)
                             Container(
                               padding: const EdgeInsets.all(12),
                               decoration: BoxDecoration(
                                 color: Colors.grey[50],
-                                borderRadius: BorderRadius.only(
+                                borderRadius: const BorderRadius.only(
                                   bottomLeft: Radius.circular(16),
                                   bottomRight: Radius.circular(16),
                                 ),
@@ -262,12 +289,18 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
                               child: GestureDetector(
                                 onTap: () {
                                   _closeDropdown();
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute(
+                                      builder: (_) =>
+                                          const AllNotificationsScreen(),
+                                    ),
+                                  );
                                 },
-                                child: Center(
+                                child: const Center(
                                   child: Text(
                                     'Ver todas las notificaciones',
                                     style: TextStyle(
-                                      color: const Color(0xFFA4238E),
+                                      color: Color(0xFFA4238E),
                                       fontSize: 14,
                                       fontWeight: FontWeight.w500,
                                     ),
@@ -290,7 +323,8 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
 
   Widget _buildNotificationItem(NotificationItem notification) {
     // 🎯 LA NOTIFICACIÓN ESPECIAL SE VE DIFERENTE
-    bool isSpecial = notification.id == '1';
+    final bool isSpecial =
+        notification.id == '1' || notification.route == '/launch';
 
     return InkWell(
       onTap: () => _handleNotificationTap(notification),
@@ -300,8 +334,8 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
           gradient: isSpecial
               ? LinearGradient(
                   colors: [
-                    Color(0xFFA4238E).withOpacity(0.1),
-                    Color(0xFF8B1D7C).withOpacity(0.05),
+                    const Color(0xFFA4238E).withOpacity(0.1),
+                    const Color(0xFF8B1D7C).withOpacity(0.05),
                   ],
                 )
               : null,
@@ -319,7 +353,7 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
                 gradient: isSpecial
-                    ? LinearGradient(
+                    ? const LinearGradient(
                         colors: [Color(0xFFA4238E), Color(0xFF8B1D7C)],
                       )
                     : null,
@@ -330,9 +364,9 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
                 boxShadow: isSpecial
                     ? [
                         BoxShadow(
-                          color: Color(0xFFA4238E).withOpacity(0.3),
+                          color: const Color(0xFFA4238E).withOpacity(0.3),
                           blurRadius: 6,
-                          offset: Offset(0, 2),
+                          offset: const Offset(0, 2),
                         ),
                       ]
                     : null,
@@ -360,7 +394,7 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
                           : (notification.isRead
                                 ? FontWeight.w500
                                 : FontWeight.w600),
-                      color: isSpecial ? Color(0xFFA4238E) : Colors.black,
+                      color: isSpecial ? const Color(0xFFA4238E) : Colors.black,
                       fontFamily: 'Poppins',
                     ),
                     maxLines: 1,
@@ -371,7 +405,9 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
                     notification.subtitle,
                     style: TextStyle(
                       fontSize: 12,
-                      color: isSpecial ? Color(0xFF8B1D7C) : Colors.grey[600],
+                      color: isSpecial
+                          ? const Color(0xFF8B1D7C)
+                          : Colors.grey[600],
                       fontFamily: 'Poppins',
                     ),
                     maxLines: 2,
@@ -385,19 +421,18 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
                         style: TextStyle(fontSize: 10, color: Colors.grey[500]),
                       ),
                       if (isSpecial) ...[
-                        SizedBox(width: 8),
+                        const SizedBox(width: 8),
                         Container(
-                          padding: EdgeInsets.symmetric(
+                          padding: const EdgeInsets.symmetric(
                             horizontal: 6,
                             vertical: 2,
                           ),
-                          decoration: BoxDecoration(
+                          decoration: const BoxDecoration(
                             gradient: LinearGradient(
                               colors: [Color(0xFFA4238E), Color(0xFF8B1D7C)],
                             ),
-                            borderRadius: BorderRadius.circular(8),
                           ),
-                          child: Text(
+                          child: const Text(
                             'NUEVO',
                             style: TextStyle(
                               color: Colors.white,
@@ -420,14 +455,14 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
                   Container(
                     width: 8,
                     height: 8,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFA4238E),
+                    decoration: const BoxDecoration(
+                      color: Color(0xFFA4238E),
                       shape: BoxShape.circle,
                     ),
                   ),
                 if (isSpecial) ...[
-                  SizedBox(height: 4),
-                  Icon(
+                  const SizedBox(height: 4),
+                  const Icon(
                     Icons.arrow_forward_ios,
                     color: Color(0xFFA4238E),
                     size: 12,
@@ -447,7 +482,7 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
       child: Column(
         children: [
           Icon(Icons.notifications_none, size: 48, color: Colors.grey[400]),
-          SizedBox(height: 12),
+          const SizedBox(height: 12),
           Text(
             'No hay notificaciones',
             style: TextStyle(
@@ -456,7 +491,7 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
               fontWeight: FontWeight.w500,
             ),
           ),
-          SizedBox(height: 4),
+          const SizedBox(height: 4),
           Text(
             'Te notificaremos cuando tengas algo nuevo',
             style: TextStyle(fontSize: 12, color: Colors.grey[500]),
@@ -485,7 +520,8 @@ class _NotificationsDropdownState extends State<NotificationsDropdown>
   }
 }
 
-// Tu clase NotificationOverlay (sin cambios)
+// =========== Overlay helper ===========
+
 class NotificationOverlay {
   static OverlayEntry? _overlayEntry;
 
@@ -513,4 +549,181 @@ class NotificationOverlay {
   }
 
   static bool get isShowing => _overlayEntry != null;
+}
+
+// =========== PANTALLA COMPLETA: TODAS LAS NOTIFICACIONES ===========
+
+class AllNotificationsScreen extends StatelessWidget {
+  const AllNotificationsScreen({Key? key}) : super(key: key);
+
+  String _formatTimestamp(DateTime timestamp) {
+    final now = DateTime.now();
+    final difference = now.difference(timestamp);
+
+    if (difference.inMinutes < 1) {
+      return 'Ahora';
+    } else if (difference.inMinutes < 60) {
+      return 'Hace ${difference.inMinutes}m';
+    } else if (difference.inHours < 24) {
+      return 'Hace ${difference.inHours}h';
+    } else if (difference.inDays < 7) {
+      return 'Hace ${difference.inDays}d';
+    } else {
+      return '${timestamp.day}/${timestamp.month}';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<NotificationsProvider>(
+      builder: (context, notifProv, _) {
+        final notifications = notifProv.notifications;
+
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text(
+              'Notificaciones',
+              style: TextStyle(fontFamily: 'Poppins'),
+            ),
+            actions: [
+              if (notifications.isNotEmpty)
+                TextButton(
+                  onPressed: () {
+                    notifProv.clearAll();
+                  },
+                  child: const Text(
+                    'Eliminar todas',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          body: notifications.isEmpty
+              ? Center(
+                  child: Text(
+                    'No tienes notificaciones',
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.grey[600],
+                      fontFamily: 'Poppins',
+                    ),
+                  ),
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  itemCount: notifications.length,
+                  separatorBuilder: (_, __) =>
+                      Divider(color: Colors.grey[200], height: 0.5),
+                  itemBuilder: (context, index) {
+                    final notification = notifications[index];
+                    final isSpecial =
+                        notification.id == '1' ||
+                        notification.route == '/launch';
+
+                    return Dismissible(
+                      key: ValueKey(notification.id),
+                      direction: DismissDirection.endToStart,
+                      background: Container(
+                        alignment: Alignment.centerRight,
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        color: Colors.redAccent,
+                        child: const Icon(Icons.delete, color: Colors.white),
+                      ),
+                      onDismissed: (_) {
+                        context
+                            .read<NotificationsProvider>()
+                            .removeNotification(notification.id);
+                      },
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        leading: CircleAvatar(
+                          backgroundColor: isSpecial
+                              ? const Color(0xFFA4238E)
+                              : const Color(0xFFA4238E).withOpacity(0.1),
+                          child: Icon(
+                            notification.icon,
+                            color: isSpecial ? Colors.white : Colors.purple,
+                          ),
+                        ),
+                        title: Text(
+                          notification.title,
+                          style: TextStyle(
+                            fontFamily: 'Poppins',
+                            fontWeight: notification.isRead
+                                ? FontWeight.w500
+                                : FontWeight.w700,
+                            fontSize: 14,
+                          ),
+                        ),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 2),
+                            Text(
+                              notification.subtitle,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey[700],
+                                fontFamily: 'Poppins',
+                              ),
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _formatTimestamp(notification.timestamp),
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.grey[500],
+                              ),
+                            ),
+                          ],
+                        ),
+                        trailing: !notification.isRead
+                            ? Container(
+                                width: 8,
+                                height: 8,
+                                decoration: const BoxDecoration(
+                                  color: Color(0xFFA4238E),
+                                  shape: BoxShape.circle,
+                                ),
+                              )
+                            : null,
+                        onTap: () {
+                          // marcar como leída
+                          context.read<NotificationsProvider>().markAsRead(
+                            notification.id,
+                          );
+
+                          // misma lógica de navegación especial si quieres
+                          final shouldLaunch =
+                              notification.id == '1' ||
+                              notification.route == '/launch';
+
+                          if (shouldLaunch) {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => FiberluxLaunchScreen(),
+                              ),
+                            );
+                          }
+                        },
+                      ),
+                    );
+                  },
+                ),
+        );
+      },
+    );
+  }
 }
