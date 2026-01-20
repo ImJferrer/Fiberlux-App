@@ -1114,224 +1114,227 @@ class EntidadDashboardState extends State<EntidadDashboard> {
   }
 
   Widget _buildEconomicGroupsBar() {
-    final ws = context.watch<GraphSocketProvider>();
-    final enGrupo = ws.usingGroup;
-    final groupName = (ws.currentGroupName ?? 'Grupo Empresarial').replaceAll(
-      '_',
-      ' ',
-    );
+    // Add your implementation here or return a default widget.
+    return const SizedBox.shrink(); // Default return to avoid null.
 
-    // 1) Lista “bonita” del provider
-    List<Map<String, String>> items = ws.rucsRazonesList
-        .map<Map<String, String>>(
-          (e) => {
-            'ruc': (e['ruc'] ?? '').toString(),
-            'nombre': (e['nombre'] ?? e['razon'] ?? e['Razon_Social'] ?? '—')
-                .toString(),
-          },
-        )
-        .toList();
+    //   final ws = context.watch<GraphSocketProvider>();
+    //   final enGrupo = ws.usingGroup;
+    //   final groupName = (ws.currentGroupName ?? 'Grupo Empresarial').replaceAll(
+    //     '_',
+    //     ' ',
+    //   );
 
-    // 2) Fallbacks desde resumen si está vacío
-    if (items.isEmpty) {
-      final rucs =
-          (ws.resumen['RUCs'] as List?)?.map((e) => e.toString()).toList() ??
-          const [];
-      final mapRaz = Map<String, dynamic>.from(
-        (ws.resumen['RUCs_Razones_Map'] as Map?) ?? const {},
-      );
-      if (rucs.isNotEmpty) {
-        items = rucs
-            .map<Map<String, String>>(
-              (r) => {'ruc': r, 'nombre': (mapRaz[r]?.toString() ?? '—')},
-            )
-            .toList();
-      } else {
-        final list = (ws.resumen['RUCs_Razones'] as List?) ?? const [];
-        items = list.whereType<Map>().map<Map<String, String>>((m) {
-          final mm = Map<String, dynamic>.from(m);
-          return {
-            'ruc': (mm['RUC'] ?? '').toString(),
-            'nombre': (mm['Razon_Social'] ?? '—').toString(),
-          };
-        }).toList();
-      }
-    }
+    //   // 1) Lista “bonita” del provider
+    //   List<Map<String, String>> items = ws.rucsRazonesList
+    //       .map<Map<String, String>>(
+    //         (e) => {
+    //           'ruc': (e['ruc'] ?? '').toString(),
+    //           'nombre': (e['nombre'] ?? e['razon'] ?? e['Razon_Social'] ?? '—')
+    //               .toString(),
+    //         },
+    //       )
+    //       .toList();
 
-    // Barra selectora de RUC
-    final bar = Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(8),
-        onTap: (!enGrupo || items.isEmpty)
-            ? null
-            : () {
-                showModalBottomSheet(
-                  context: context,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  builder: (ctx) {
-                    final grupoRaw =
-                        _grupoRawFromWs(ws) ?? groupName.replaceAll('_', ' ');
-                    return SafeArea(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const SizedBox(height: 12),
-                          Text(
-                            groupName,
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          const Divider(height: 1),
+    //   // 2) Fallbacks desde resumen si está vacío
+    //   if (items.isEmpty) {
+    //     final rucs =
+    //         (ws.resumen['RUCs'] as List?)?.map((e) => e.toString()).toList() ??
+    //         const [];
+    //     final mapRaz = Map<String, dynamic>.from(
+    //       (ws.resumen['RUCs_Razones_Map'] as Map?) ?? const {},
+    //     );
+    //     if (rucs.isNotEmpty) {
+    //       items = rucs
+    //           .map<Map<String, String>>(
+    //             (r) => {'ruc': r, 'nombre': (mapRaz[r]?.toString() ?? '—')},
+    //           )
+    //           .toList();
+    //     } else {
+    //       final list = (ws.resumen['RUCs_Razones'] as List?) ?? const [];
+    //       items = list.whereType<Map>().map<Map<String, String>>((m) {
+    //         final mm = Map<String, dynamic>.from(m);
+    //         return {
+    //           'ruc': (mm['RUC'] ?? '').toString(),
+    //           'nombre': (mm['Razon_Social'] ?? '—').toString(),
+    //         };
+    //       }).toList();
+    //     }
+    //   }
 
-                          // 🔹 Opción para TODOS los RUCs del grupo
-                          ListTile(
-                            title: const Text('Ver todos'),
-                            onTap: () {
-                              Navigator.pop(ctx);
-                              setState(() => _selectedRuc = null);
-                              ws.clearSelectedGroupRuc();
-                              ws.requestGraphDataForSelection(grupo: grupoRaw);
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                    'Mostrando todos los RUCs del grupo',
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                          const Divider(height: 1),
+    //   // Barra selectora de RUC
+    //   final bar = Padding(
+    //     padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+    //     child: InkWell(
+    //       borderRadius: BorderRadius.circular(8),
+    //       onTap: (!enGrupo || items.isEmpty)
+    //           ? null
+    //           : () {
+    //               showModalBottomSheet(
+    //                 context: context,
+    //                 shape: RoundedRectangleBorder(
+    //                   borderRadius: BorderRadius.circular(16),
+    //                 ),
+    //                 builder: (ctx) {
+    //                   final grupoRaw =
+    //                       _grupoRawFromWs(ws) ?? groupName.replaceAll('_', ' ');
+    //                   return SafeArea(
+    //                     child: Column(
+    //                       mainAxisSize: MainAxisSize.min,
+    //                       children: [
+    //                         const SizedBox(height: 12),
+    //                         Text(
+    //                           groupName,
+    //                           style: const TextStyle(
+    //                             fontSize: 16,
+    //                             fontWeight: FontWeight.w800,
+    //                           ),
+    //                         ),
+    //                         const SizedBox(height: 8),
+    //                         const Divider(height: 1),
 
-                          // Lista de RUCs
-                          Flexible(
-                            child: ListView.separated(
-                              shrinkWrap: true,
-                              padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
-                              itemCount: items.length,
-                              separatorBuilder: (_, __) =>
-                                  const Divider(height: 1),
-                              itemBuilder: (_, i) {
-                                final ruc = items[i]['ruc']!;
-                                final nombre = items[i]['nombre']!;
-                                return ListTile(
-                                  title: Text(
-                                    nombre,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  subtitle: Text(ruc),
-                                  trailing: const Icon(
-                                    Icons.chevron_right_rounded,
-                                  ),
-                                  onTap: () {
-                                    Navigator.pop(ctx);
-                                    setState(() {
-                                      _selectedRuc = ruc;
-                                      selectedStatus = null;
-                                      _focusedServiceId = null; // limpia foco
-                                      _searchController.clear();
-                                      searchQuery = '';
-                                      isSearching = false;
-                                      isLoadingServices = true;
-                                    });
-                                    ws.requestGraphDataForSelection(
-                                      grupo: grupoRaw,
-                                      ruc: ruc, // filtro dentro del grupo
-                                    );
-                                  },
-                                );
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                );
-              },
-        child: Container(
-          height: 44,
-          decoration: BoxDecoration(
-            color: enGrupo ? Colors.white : Colors.grey.shade200,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.grey.shade300),
-          ),
-          child: Row(
-            children: [
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  enGrupo
-                      ? '$groupName — ${items.length} RUC${items.length == 1 ? '' : 's'}'
-                      : 'Grupo Empresarial (activa el switch en Perfil)',
-                  style: const TextStyle(
-                    color: Colors.black87,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              Icon(
-                enGrupo && items.isNotEmpty
-                    ? Icons.expand_more
-                    : Icons.chevron_right,
-                size: 20,
-                color: Colors.grey.shade600,
-              ),
-              const SizedBox(width: 8),
-            ],
-          ),
-        ),
-      ),
-    );
+    //                         // 🔹 Opción para TODOS los RUCs del grupo
+    //                         ListTile(
+    //                           title: const Text('Ver todos'),
+    //                           onTap: () {
+    //                             Navigator.pop(ctx);
+    //                             setState(() => _selectedRuc = null);
+    //                             ws.clearSelectedGroupRuc();
+    //                             ws.requestGraphDataForSelection(grupo: grupoRaw);
+    //                             ScaffoldMessenger.of(context).showSnackBar(
+    //                               const SnackBar(
+    //                                 content: Text(
+    //                                   'Mostrando todos los RUCs del grupo',
+    //                                 ),
+    //                               ),
+    //                             );
+    //                           },
+    //                         ),
+    //                         const Divider(height: 1),
 
-    // Chips auxiliares (foco de servicio y RUC filtrado)
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        if (_view == EntidadViewMode.grouped && _focusedServiceId != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: ActionChip(
-                avatar: const Icon(Icons.filter_center_focus),
-                label: Text(
-                  'Viendo solo servicio: $_focusedServiceId  •  Quitar',
-                ),
-                onPressed: () => setState(() => _focusedServiceId = null),
-              ),
-            ),
-          ),
+    //                         // Lista de RUCs
+    //                         Flexible(
+    //                           child: ListView.separated(
+    //                             shrinkWrap: true,
+    //                             padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+    //                             itemCount: items.length,
+    //                             separatorBuilder: (_, __) =>
+    //                                 const Divider(height: 1),
+    //                             itemBuilder: (_, i) {
+    //                               final ruc = items[i]['ruc']!;
+    //                               final nombre = items[i]['nombre']!;
+    //                               return ListTile(
+    //                                 title: Text(
+    //                                   nombre,
+    //                                   maxLines: 2,
+    //                                   overflow: TextOverflow.ellipsis,
+    //                                 ),
+    //                                 subtitle: Text(ruc),
+    //                                 trailing: const Icon(
+    //                                   Icons.chevron_right_rounded,
+    //                                 ),
+    //                                 onTap: () {
+    //                                   Navigator.pop(ctx);
+    //                                   setState(() {
+    //                                     _selectedRuc = ruc;
+    //                                     selectedStatus = null;
+    //                                     _focusedServiceId = null; // limpia foco
+    //                                     _searchController.clear();
+    //                                     searchQuery = '';
+    //                                     isSearching = false;
+    //                                     isLoadingServices = true;
+    //                                   });
+    //                                   ws.requestGraphDataForSelection(
+    //                                     grupo: grupoRaw,
+    //                                     ruc: ruc, // filtro dentro del grupo
+    //                                   );
+    //                                 },
+    //                               );
+    //                             },
+    //                           ),
+    //                         ),
+    //                       ],
+    //                     ),
+    //                   );
+    //                 },
+    //               );
+    //             },
+    //       child: Container(
+    //         height: 44,
+    //         decoration: BoxDecoration(
+    //           color: enGrupo ? Colors.white : Colors.grey.shade200,
+    //           borderRadius: BorderRadius.circular(8),
+    //           border: Border.all(color: Colors.grey.shade300),
+    //         ),
+    //         child: Row(
+    //           children: [
+    //             const SizedBox(width: 12),
+    //             Expanded(
+    //               child: Text(
+    //                 enGrupo
+    //                     ? '$groupName — ${items.length} RUC${items.length == 1 ? '' : 's'}'
+    //                     : 'Grupo Empresarial (activa el switch en Perfil)',
+    //                 style: const TextStyle(
+    //                   color: Colors.black87,
+    //                   fontWeight: FontWeight.w600,
+    //                 ),
+    //               ),
+    //             ),
+    //             Icon(
+    //               enGrupo && items.isNotEmpty
+    //                   ? Icons.expand_more
+    //                   : Icons.chevron_right,
+    //               size: 20,
+    //               color: Colors.grey.shade600,
+    //             ),
+    //             const SizedBox(width: 8),
+    //           ],
+    //         ),
+    //       ),
+    //     ),
+    //   );
 
-        // 🔹 Chip para quitar filtro por RUC (si hay uno seleccionado)
-        if (ws.usingGroup && _selectedRuc != null && _selectedRuc!.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: ActionChip(
-                avatar: const Icon(Icons.filter_alt_off),
-                label: Text('RUC: $_selectedRuc  •  Quitar'),
-                onPressed: () {
-                  final grupoRaw =
-                      _grupoRawFromWs(ws) ?? groupName.replaceAll('_', ' ');
-                  setState(() => _selectedRuc = null);
-                  ws.clearSelectedGroupRuc();
-                  ws.requestGraphDataForSelection(grupo: grupoRaw);
-                },
-              ),
-            ),
-          ),
+    //   // Chips auxiliares (foco de servicio y RUC filtrado)
+    //   return Column(
+    //     crossAxisAlignment: CrossAxisAlignment.stretch,
+    //     children: [
+    //       if (_view == EntidadViewMode.grouped && _focusedServiceId != null)
+    //         Padding(
+    //           padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+    //           child: Align(
+    //             alignment: Alignment.centerLeft,
+    //             child: ActionChip(
+    //               avatar: const Icon(Icons.filter_center_focus),
+    //               label: Text(
+    //                 'Viendo solo servicio: $_focusedServiceId  •  Quitar',
+    //               ),
+    //               onPressed: () => setState(() => _focusedServiceId = null),
+    //             ),
+    //           ),
+    //         ),
 
-        bar,
-      ],
-    );
+    //       // 🔹 Chip para quitar filtro por RUC (si hay uno seleccionado)
+    //       if (ws.usingGroup && _selectedRuc != null && _selectedRuc!.isNotEmpty)
+    //         Padding(
+    //           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+    //           child: Align(
+    //             alignment: Alignment.centerLeft,
+    //             child: ActionChip(
+    //               avatar: const Icon(Icons.filter_alt_off),
+    //               label: Text('RUC: $_selectedRuc  •  Quitar'),
+    //               onPressed: () {
+    //                 final grupoRaw =
+    //                     _grupoRawFromWs(ws) ?? groupName.replaceAll('_', ' ');
+    //                 setState(() => _selectedRuc = null);
+    //                 ws.clearSelectedGroupRuc();
+    //                 ws.requestGraphDataForSelection(grupo: grupoRaw);
+    //               },
+    //             ),
+    //           ),
+    //         ),
+
+    //       bar,
+    //     ],
+    //   );
   }
 
   String _composeDireccionCompleta(Map item) {
@@ -4642,23 +4645,87 @@ class _ServicioDetailScreenState extends State<ServicioDetailScreen> {
     }
 
     final close = _showBwLoading('Ejecutando diagnóstico…', 'Servicio: $id');
+    await Future.delayed(const Duration(seconds: 5));
+    close();
 
-    try {
-      final res = await _fetchDiagnosticoCompleto(idServicio: id);
+    if (!mounted) return;
 
-      close();
-      if (!mounted) return;
-
-      _showDiagnosticoSheet(res);
-    } catch (e) {
-      close();
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error: $e')));
-    }
+    // Diálogo de error
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.red.shade50,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.error_outline,
+                color: Colors.red.shade700,
+                size: 32,
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                '¡Algo salió mal!',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: const Text(
+          'Ha ocurrido un error al ejecutar el diagnóstico. Por favor, contacta con el equipo de soporte para recibir asistencia.',
+          style: TextStyle(fontSize: 16),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text(
+              'OK',
+              style: TextStyle(
+                color: Colors.red.shade700,
+                fontWeight: FontWeight.w600,
+                fontSize: 16,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
+
+  // Future<void> _onDiagnosticoCompleto() async {
+  //   final id = _resolveIdServicio();
+  //   if (id.isEmpty) {
+  //     ScaffoldMessenger.of(context).showSnackBar(
+  //       const SnackBar(content: Text('No se encontró el IdServicio')),
+  //     );
+  //     return;
+  //   }
+
+  //   final close = _showBwLoading('Ejecutando diagnóstico…', 'Servicio: $id');
+
+  //   try {
+  //     final res = await _fetchDiagnosticoCompleto(idServicio: id);
+
+  //     close();
+  //     if (!mounted) return;
+
+  //     _showDiagnosticoSheet(res);
+  //   } catch (e) {
+  //     close();
+  //     if (!mounted) return;
+
+  //     ScaffoldMessenger.of(
+  //       context,
+  //     ).showSnackBar(SnackBar(content: Text('Error: $e')));
+  //   }
+  // }
 
   void _showBwMiniSheet({
     required String idServicio,
@@ -5412,8 +5479,8 @@ class _ServicioDetailScreenState extends State<ServicioDetailScreen> {
                     const SizedBox(height: 10),
 
                     _buildInfoTile(
-                      'Razón social',
-                      _resolveRazonSocialForService() ?? '—',
+                      'Razón Social',
+                      _resolveRazonSocialForService() ?? '-',
                       Icons.badge, // o Icons.business
                     ),
 

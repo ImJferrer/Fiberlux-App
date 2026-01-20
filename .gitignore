@@ -43,3 +43,18 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local and secret files
+local.properties
+key.properties
+# Firebase config
+/android/app/google-services.json
+/ios/GoogleService-Info.plist
+
+# Environment files
+.env
+.env.*
+
+# Android and IDE caches
+/android/.gradle/
+/ios/Pods/

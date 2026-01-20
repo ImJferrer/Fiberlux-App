@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 
 class GraphSocketProvider extends ChangeNotifier {
@@ -17,6 +18,14 @@ class GraphSocketProvider extends ChangeNotifier {
 
   Completer<void>? _connCompleter;
   Map<String, dynamic>? _queuedPedir;
+
+  // Último payload enviado a PedirGrafica (para reloadTickets)
+  Map<String, dynamic>? _lastPedirPayload;
+
+  Map<String, dynamic>? _noFibraFromApi;
+  String? _lastNoFibraRuc;
+  DateTime? _lastNoFibraFetch;
+  bool _noFibraFetchInFlight = false;
 
   // === Estado de conexión ===
   bool get isConnected => _isConnected;
@@ -115,6 +124,40 @@ class GraphSocketProvider extends ChangeNotifier {
     return <String, dynamic>{};
   }
 
+  Map<String, dynamic>? _asMapIf(dynamic v) {
+    if (v is Map) return Map<String, dynamic>.from(v);
+    if (v is String) {
+      final s = v.trim();
+      if (s.startsWith('{') && s.endsWith('}')) {
+        try {
+          final dec = jsonDecode(s);
+          if (dec is Map) return Map<String, dynamic>.from(dec);
+        } catch (_) {}
+      }
+    }
+    return null;
+  }
+
+  Map<String, dynamic>? _extractNoFibraFrom(
+    List<Map<String, dynamic>> sources,
+  ) {
+    const keys = [
+      'NoFibra',
+      'NOFIBRA',
+      'noFibra',
+      'no_fibra',
+      'No_Fibra',
+      'NO_FIBRA',
+    ];
+    for (final m in sources) {
+      for (final k in keys) {
+        final asMap = _asMapIf(m[k]);
+        if (asMap != null && asMap.isNotEmpty) return asMap;
+      }
+    }
+    return null;
+  }
+
   String _roomFromGroup(String g) =>
       g.trim().replaceAll(RegExp(r'\s+'), '_').toUpperCase();
 
@@ -169,10 +212,12 @@ class GraphSocketProvider extends ChangeNotifier {
     final payload = {'alias': 'PRTG', 'GRUPO': g, 'ruc': _roomFromGroup(g)};
     if (_socket == null || !_isConnected) {
       _queuedPedir = payload;
+      _lastPedirPayload = Map<String, dynamic>.from(payload);
       debugPrint('⏳ No conectado. Encolando índice de grupo: $payload');
       return;
     }
     debugPrint('📬 PedirGrafica (índice grupo): $payload');
+    _lastPedirPayload = Map<String, dynamic>.from(payload);
     _socket!.emit('PedirGrafica', payload);
   }
 
@@ -389,6 +434,7 @@ class GraphSocketProvider extends ChangeNotifier {
     _groupRucs = [];
     _groupRucNombre = {};
     _queuedPedir = null;
+    _lastPedirPayload = null;
 
     // ---- Tumba socket previo (si existe) ----
     if (_socket != null) {
@@ -460,10 +506,12 @@ class GraphSocketProvider extends ChangeNotifier {
             'ruc': _roomFromGroup(grupo),
           };
           debugPrint('📊 PedirGrafica init (grupo): $pedir');
+          _lastPedirPayload = Map<String, dynamic>.from(pedir);
           _socket!.emit('PedirGrafica', pedir);
         } else if (ruc != null && ruc.isNotEmpty) {
           final pedir = {'alias': 'PRTG', 'RUC': ruc, 'ruc': ruc};
           debugPrint('📊 PedirGrafica init (ruc): $pedir');
+          _lastPedirPayload = Map<String, dynamic>.from(pedir);
           _socket!.emit('PedirGrafica', pedir);
         }
 
@@ -472,6 +520,7 @@ class GraphSocketProvider extends ChangeNotifier {
           await Future.delayed(const Duration(milliseconds: 150));
           debugPrint('⏩ Enviando PedirGrafica encolado: $_queuedPedir');
           _socket!.emit('PedirGrafica', _queuedPedir);
+          _lastPedirPayload = Map<String, dynamic>.from(_queuedPedir!);
           _queuedPedir = null;
         }
 
@@ -541,12 +590,14 @@ class GraphSocketProvider extends ChangeNotifier {
 
     if (_socket == null || !_isConnected) {
       _queuedPedir = payload;
+      _lastPedirPayload = Map<String, dynamic>.from(payload);
       debugPrint('⏳ No conectado. Encolando PedirGrafica: $payload');
       notifyListeners(); // refleja selectedGroupRuc en la UI
       return;
     }
 
     debugPrint('🔄 PedirGrafica ${inGroup ? "(grupo)" : "(ruc)"}: $payload');
+    _lastPedirPayload = Map<String, dynamic>.from(payload);
     _socket!.emit('PedirGrafica', payload);
     notifyListeners();
   }
@@ -570,6 +621,7 @@ class GraphSocketProvider extends ChangeNotifier {
     _groupRucNombre = {};
     _currentRuc = null;
     _queuedPedir = null;
+    _lastPedirPayload = null;
     notifyListeners();
     debugPrint('🧹 Limpieza completa del GraphSocketProvider');
   }
@@ -876,6 +928,80 @@ class GraphSocketProvider extends ChangeNotifier {
         });
       }
 
+      final knownKeys = <String>{
+        'Grafica',
+        'grafica',
+        'Detalle',
+        'detalle',
+        'Acordeon',
+        'acordeon',
+        'Resumen',
+        'resumen',
+        'Afectados',
+        'afectados',
+        'msg',
+        'Msg',
+        'fecha',
+        'Fecha',
+        'alias',
+        'Alias',
+        'leyenda',
+        'valores',
+        'colores',
+        'colors',
+        'labels',
+        'values',
+        'colorMap',
+        'colormap',
+        'colores_map',
+        'colores_list',
+        'colors_list',
+        'UP',
+        'DOWN',
+        'Up',
+        'Down',
+        'up',
+        'down',
+        'RUC',
+        'ruc',
+        'RUCs',
+        'RUCs_Razones',
+        'RUCs_Razones_Map',
+        'GRUPO',
+        'Grupo',
+        'grupo',
+      };
+      final extraMap = <String, dynamic>{};
+      void addExtraFrom(Map<String, dynamic> m) {
+        for (final entry in m.entries) {
+          final k = entry.key.toString();
+          if (knownKeys.contains(k)) continue;
+          extraMap[k] = entry.value;
+        }
+      }
+      addExtraFrom(root);
+      addExtraFrom(src);
+      addExtraFrom(graficaSection);
+      addExtraFrom(detalleSection);
+      addExtraFrom(acordeonSection);
+
+      final noFibraFromWs = _extractNoFibraFrom(
+        [
+          root,
+          src,
+          graficaSection,
+          detalleSection,
+          acordeonSection,
+          nuevoResumen,
+        ],
+      );
+      if (noFibraFromWs != null && noFibraFromWs.isNotEmpty) {
+        extraMap['NoFibra'] = noFibraFromWs;
+      } else if (_noFibraFromApi != null && _noFibraFromApi!.isNotEmpty) {
+        extraMap['NoFibra'] = _noFibraFromApi;
+      }
+      extra = extraMap;
+
       debugPrint(
         '🧩 Grupo: ${currentGroupName ?? "-"}  RUCs=${_groupRucs.length}  Razones=${_groupRucNombre.length}',
       );
@@ -885,14 +1011,121 @@ class GraphSocketProvider extends ChangeNotifier {
     }
   }
 
+  // ========= Recargar tickets (para PRE recién creado) =========
+  Future<void> reloadTickets() async {
+    try {
+      if (_lastPedirPayload == null) {
+        debugPrint(
+          '🔁 reloadTickets: no hay _lastPedirPayload, nada que refrescar.',
+        );
+        return;
+      }
+
+      final payload = Map<String, dynamic>.from(_lastPedirPayload!);
+
+      if (_socket == null || !_isConnected) {
+        _queuedPedir = payload;
+        debugPrint(
+          '🔁 reloadTickets: socket no conectado, encolando PedirGrafica: $payload',
+        );
+        return;
+      }
+
+      debugPrint('🔁 reloadTickets → emit PedirGrafica: $payload');
+      _socket!.emit('PedirGrafica', payload);
+    } catch (e) {
+      debugPrint('⚠️ reloadTickets error: $e');
+    }
+  }
+
+  Future<void> fetchNoFibraForRuc(
+    String ruc, {
+    Duration minInterval = const Duration(seconds: 30),
+  }) async {
+    final trimmed = ruc.trim();
+    if (trimmed.isEmpty) return;
+
+    final isNewRuc = _lastNoFibraRuc != trimmed;
+    if (isNewRuc) {
+      _noFibraFromApi = null;
+      if (extra.containsKey('NoFibra')) {
+        final updated = Map<String, dynamic>.from(extra);
+        updated.remove('NoFibra');
+        extra = updated;
+        notifyListeners();
+      }
+    }
+
+    final now = DateTime.now();
+    if (!isNewRuc &&
+        _lastNoFibraFetch != null &&
+        now.difference(_lastNoFibraFetch!) < minInterval) {
+      return;
+    }
+
+    if (_noFibraFetchInFlight) return;
+    _noFibraFetchInFlight = true;
+    _lastNoFibraRuc = trimmed;
+    _lastNoFibraFetch = now;
+
+    try {
+      final uri = Uri.parse('http://200.1.179.157:3000/App/');
+      final resp = await http
+          .post(
+            uri,
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: jsonEncode({'RUC': trimmed}),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        debugPrint(
+          '⚠️ /App/ NoFibra HTTP ${resp.statusCode}: ${resp.body}',
+        );
+        return;
+      }
+
+      final raw = utf8.decode(resp.bodyBytes);
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+
+      final root = _asMapDeep(decoded);
+      final noFibra = _extractNoFibraFrom(
+        [
+          root,
+          _asMapDeep(root['Resumen']),
+          _asMapDeep(root['resumen']),
+          _asMapDeep(root['Grafica']),
+          _asMapDeep(root['grafica']),
+        ],
+      );
+      if (noFibra == null || noFibra.isEmpty) return;
+
+      _noFibraFromApi = noFibra;
+      final updated = Map<String, dynamic>.from(extra);
+      updated['NoFibra'] = noFibra;
+      extra = updated;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('⚠️ Error /App/ NoFibra: $e');
+    } finally {
+      _noFibraFetchInFlight = false;
+    }
+  }
+
   // ========= Refresh manual (por RUC directo) =========
   void requestGraphData(String ruc) {
     final payload = {'RUC': ruc, 'ruc': ruc, 'alias': 'PRTG'};
     if (_socket != null && _isConnected) {
       debugPrint('🔄 Solicitar refresh para RUC: $payload');
+      _lastPedirPayload = Map<String, dynamic>.from(payload);
       _socket!.emit('PedirGrafica', payload);
     } else {
       _queuedPedir = payload;
+      _lastPedirPayload = Map<String, dynamic>.from(payload);
       debugPrint('⏳ No conectado. Encolando refresh: $payload');
     }
   }
@@ -907,6 +1140,7 @@ class GraphSocketProvider extends ChangeNotifier {
     _isConnecting = false;
     _connCompleter = null;
     _queuedPedir = null;
+    _lastPedirPayload = null;
     msg = '';
     _currentRuc = null;
     notifyListeners();

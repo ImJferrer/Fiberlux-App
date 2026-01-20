@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:fiberlux_new_app/providers/notifications_provider.dart';
 import 'package:fiberlux_new_app/services/api_services.dart';
 import 'package:fiberlux_new_app/services/fcm_service.dart';
 import 'package:fiberlux_new_app/widgets/fiberlux_base_layout.dart';
@@ -216,6 +217,10 @@ class _LoginScreenState extends State<LoginScreen> {
         context,
         listen: false,
       );
+      final notifProv = Provider.of<NotificationsProvider>(
+        context,
+        listen: false,
+      );
 
       final savedRuc = prefs.getString('saved_ruc') ?? sessionProv.ruc;
       final access = sessionProv.accessToken ?? prefs.getString('access_token');
@@ -227,17 +232,23 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
+      // 👉 IMPORTANTE: sincronizar userId con NotificationsProvider
+      if (sessionProv.userId != null) {
+        notifProv.setCurrentUserId(sessionProv.userId);
+      }
+
       // Reinicia WS limpio y conecta con el RUC
       socketProv.disconnect();
       socketProv.clearData();
       await socketProv.connect(savedRuc, colores);
 
       try {
-        await FcmService.instance.ensureRegistered(
+        final fcmToken = await FcmService.instance.ensureRegistered(
           ruc: savedRuc,
-          grupo: sessionProv.grupoNombre, // tomado de prefs si ya se guardó
+          grupo: sessionProv.grupoNombre,
           vistaRuc: false,
         );
+        notifProv.setCurrentDeviceToken(fcmToken);
       } catch (_) {}
 
       if (!mounted) return;
@@ -322,6 +333,13 @@ class _LoginScreenState extends State<LoginScreen> {
         isActive: isActive,
       );
 
+      // 👉 Avisar al NotificationsProvider quién soy
+      final notifProv = Provider.of<NotificationsProvider>(
+        context,
+        listen: false,
+      );
+      notifProv.setCurrentUserId(userId);
+
       // 4) Guardar preferencias de autologin
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('saved_username', uname);
@@ -342,13 +360,14 @@ class _LoginScreenState extends State<LoginScreen> {
       }
 
       try {
-        await FcmService.instance.ensureRegistered(
+        final fcmToken = await FcmService.instance.ensureRegistered(
           ruc: ruc,
           grupo: grupoEconomico.isNotEmpty
               ? grupoEconomico
               : sessionProv.grupoNombre,
           vistaRuc: false,
         );
+        notifProv.setCurrentDeviceToken(fcmToken);
       } catch (_) {
         // no rompas el flujo si /FCM falla
       }

@@ -363,6 +363,7 @@ class _QAChatSheetState extends State<_QAChatSheet> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   bool _sending = false;
+  String? _sessionId; // para mantener el contexto de la conversación en backend
 
   /// Convierte **texto** en negrita ocultando los ** en el mensaje
   Widget parseMessageText(String text, {bool isUser = false}) {
@@ -420,7 +421,7 @@ class _QAChatSheetState extends State<_QAChatSheet> {
     return RichText(text: TextSpan(children: spans));
   }
 
-  static const String _endpoint = 'http://209.45.78.22:9000/ask';
+  static const String _endpoint = 'http://209.61.72.70:9000/ask';
 
   @override
   void dispose() {
@@ -433,6 +434,20 @@ class _QAChatSheetState extends State<_QAChatSheet> {
     final text = _controller.text.trim();
     if (text.isEmpty || _sending) return;
 
+    final session = context.read<SessionProvider>();
+    final ruc = session.ruc?.trim();
+    if (ruc == null || ruc.isEmpty) {
+      setState(() {
+        _messages.add(
+          _ChatMessage(
+            text: 'No pude enviar la pregunta porque falta el RUC.',
+            fromUser: false,
+          ),
+        );
+      });
+      return;
+    }
+
     setState(() {
       _messages.add(_ChatMessage(text: text, fromUser: true));
       _sending = true;
@@ -444,8 +459,16 @@ class _QAChatSheetState extends State<_QAChatSheet> {
     try {
       final resp = await http.post(
         Uri.parse(_endpoint),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'question': text}),
+        headers: {
+          'Content-Type': 'application/json',
+          if (_sessionId != null) 'session': _sessionId!, // mantiene la memoria
+        },
+        body: jsonEncode({
+          'question': text,
+          'ruc': ruc,
+          if (_sessionId != null)
+            'session_id': _sessionId!, // backend espera session_id en payload
+        }),
       );
 
       if (!mounted) return;
@@ -453,6 +476,8 @@ class _QAChatSheetState extends State<_QAChatSheet> {
       if (resp.statusCode == 200) {
         final data = jsonDecode(resp.body);
         final answer = (data['answer'] ?? '').toString().trim();
+        final sessionId = (data['session_id'] ?? '').toString().trim();
+        if (sessionId.isNotEmpty) _sessionId = sessionId;
 
         setState(() {
           _messages.add(

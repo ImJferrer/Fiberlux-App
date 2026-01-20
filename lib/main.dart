@@ -110,7 +110,7 @@ void _handleNotificationNavigation(RemoteMessage message, BuildContext ctx) {
 /// 👇 NUEVO: enganchar FCM con el NotificationsProvider
 void setupFcmListeners() {
   // 🔔 App en primer plano
-  FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+  FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
     debugPrint('🟢 [onMessage] Notificación recibida en primer plano');
     debugPrint('🟢 [onMessage] messageId: ${message.messageId}');
     debugPrint('🟢 [onMessage] from: ${message.from}');
@@ -125,16 +125,26 @@ void setupFcmListeners() {
     final ctx = navigatorKey.currentContext;
     if (ctx == null) return;
 
-    ctx.read<NotificationsProvider>().addFromRemoteMessage(message);
+    final session = ctx.read<SessionProvider>();
+    await ctx.read<NotificationsProvider>().addFromRemoteMessage(
+          message,
+          currentUserId: session.userId,
+          authToken: session.accessToken,
+        );
   });
 
   // 📲 Usuario toca la noti con la app en background
-  FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+  FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) async {
     debugPrint('🟡 [onMessageOpenedApp] data: ${message.data}');
     final ctx = navigatorKey.currentContext;
     if (ctx == null) return;
 
-    ctx.read<NotificationsProvider>().addFromRemoteMessage(message);
+    final session = ctx.read<SessionProvider>();
+    await ctx.read<NotificationsProvider>().addFromRemoteMessage(
+          message,
+          currentUserId: session.userId,
+          authToken: session.accessToken,
+        );
     _handleNotificationNavigation(message, ctx); // 👈 AQUÍ navegamos
   });
 
@@ -145,7 +155,12 @@ void setupFcmListeners() {
     final ctx = navigatorKey.currentContext;
     if (ctx == null) return;
 
-    ctx.read<NotificationsProvider>().addFromRemoteMessage(message);
+    final session = ctx.read<SessionProvider>();
+    ctx.read<NotificationsProvider>().addFromRemoteMessage(
+          message,
+          currentUserId: session.userId,
+          authToken: session.accessToken,
+        );
     _handleNotificationNavigation(message, ctx); // 👈 también aquí
   });
 }
@@ -221,7 +236,12 @@ void main() async {
       // Opcional: también la guardas en el provider
       final ctx = navigatorKey.currentContext;
       if (ctx != null) {
-        ctx.read<NotificationsProvider>().addFromRemoteMessage(initialMessage);
+        final session = ctx.read<SessionProvider>();
+        await ctx.read<NotificationsProvider>().addFromRemoteMessage(
+              initialMessage,
+              currentUserId: session.userId,
+              authToken: session.accessToken,
+            );
       }
       handleNotificationNavigation(initialMessage);
     }
@@ -247,7 +267,14 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => SessionProvider(prefs)),
         ChangeNotifierProvider(create: (_) => GoogleUserProvider()),
         ChangeNotifierProvider(create: (_) => GraphSocketProvider()),
-        ChangeNotifierProvider(create: (_) => NotificationsProvider()),
+        ChangeNotifierProxyProvider<SessionProvider, NotificationsProvider>(
+          create: (_) => NotificationsProvider(),
+          update: (_, session, notif) {
+            notif ??= NotificationsProvider();
+            notif.setCurrentUserId(session.userId);
+            return notif;
+          },
+        ),
       ],
       child: MaterialApp(
         title: 'Fiberlux App',

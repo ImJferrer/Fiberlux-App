@@ -183,6 +183,17 @@ class _TicketsScreenState extends State<TicketsScreen> {
     return meses[m];
   }
 
+  int? _preticketIdFromNotifData(Map<String, dynamic>? data) {
+    if (data == null) return null;
+    final raw =
+        data['preticket'] ??
+        data['preticket_id'] ??
+        data['preticketId'] ??
+        data['preTicket'];
+    if (raw == null) return null;
+    return int.tryParse(raw.toString());
+  }
+
   List<_RucPair> _collectRucCatalog(
     GraphSocketProvider g,
     SessionProvider session,
@@ -399,17 +410,64 @@ class _TicketsScreenState extends State<TicketsScreen> {
   }
 
   List<_TicketView> _mapAfectadosToViews(dynamic afectadosDyn) {
-    final list = (afectadosDyn is List) ? afectadosDyn : const [];
+    // Soporta 2 formatos:
+    // 1) List<Map ticket>
+    // 2) List<Map grupo con key "tickets": [...]>
+    final raw = (afectadosDyn is List) ? afectadosDyn : const [];
+
+    final tickets = <Map<String, dynamic>>[];
+    for (final item in raw) {
+      if (item is Map && item['tickets'] is List) {
+        for (final t in (item['tickets'] as List)) {
+          if (t is Map) tickets.add(Map<String, dynamic>.from(t));
+        }
+      } else if (item is Map) {
+        tickets.add(Map<String, dynamic>.from(item));
+      }
+    }
+
     final tmp = <_TicketView>[];
     final seen = <String>{};
 
-    for (final t in list) {
-      if (t is! Map) continue;
+    for (final t in tickets) {
+      final nroRaw = (t['NroTicket'] ?? '').toString().trim();
+      final ticketIdRaw = (t['ticket_id'] ?? t['id'] ?? '').toString().trim();
 
-      final code = (t['NroTicket'] ?? t['ticket_id'] ?? t['id'] ?? '')
-          .toString();
-      // evita duplicados por código
-      if (code.isEmpty || !seen.add(code)) continue;
+      final origin = (t['origen'] ?? t['Origen'] ?? '')
+          .toString()
+          .toUpperCase();
+      final isPreOrigin = origin == 'PRE';
+
+      final preRaw =
+          (t['PreTicket'] ??
+                  t['preticket'] ??
+                  t['preticket_id'] ??
+                  t['id_preticket'] ??
+                  '')
+              .toString()
+              .trim();
+
+      final int? preticketId = int.tryParse(preRaw);
+
+      // ✅ Clave única REAL para deduplicar
+      final uniqueKey = (isPreOrigin && preticketId != null)
+          ? 'PRE-$preticketId'
+          : (ticketIdRaw.isNotEmpty && ticketIdRaw != 'null'
+                ? 'T-$ticketIdRaw'
+                : (nroRaw.isNotEmpty
+                      ? 'NRO-$nroRaw'
+                      : 'TMP-${t['FechaCreacion']}-${t['message']}'));
+
+      if (!seen.add(uniqueKey)) continue;
+
+      // ✅ Código mostrado:
+      // si NroTicket está pendiente, mostramos PRE-<id>
+      final bool nroPendiente =
+          nroRaw.isEmpty || nroRaw == 'null' || nroRaw.contains('⏳');
+
+      final displayCode = isPreOrigin
+          ? '⏳'
+          : (nroRaw.isNotEmpty ? nroRaw : ticketIdRaw);
 
       final estado = (t['EstadoTicket'] ?? t['estado'] ?? '').toString();
       final tipo = (t['Tipo'] ?? t['tipo_ticket_nombre'] ?? 'Ticket')
@@ -440,29 +498,9 @@ class _TicketsScreenState extends State<TicketsScreen> {
             .join(', ');
       }
 
-      final origin = (t['origen'] ?? t['Origen'] ?? '')
-          .toString()
-          .toUpperCase();
-
-      // Id de preticket (string → int?)
-      final preTicketStr =
-          (t['PreTicket'] ??
-                  t['preticket'] ??
-                  t['preticket_id'] ??
-                  t['id_preticket'] ??
-                  '')
-              .toString()
-              .trim();
-
-      final int? preticketId = int.tryParse(preTicketStr);
-
-      // ✅ Puede abrir chat si ORIGIN es PRE o TICKET y hay id de preticket
-      final bool canOpenChat =
-          (origin == 'PRE' || origin == 'TICKET') && preticketId != null;
-
       tmp.add(
         _TicketView(
-          code: code,
+          code: displayCode,
           date: date,
           affectedStores: affected,
           issueType: _twoLineUpper(tipo),
@@ -472,10 +510,17 @@ class _TicketsScreenState extends State<TicketsScreen> {
           serviciosAfectados: serviciosAfectadosText,
           area: area,
           preticketId: preticketId,
-          isPreTicket: canOpenChat, // ← ahora significa "tiene chat"
+          isPreTicket: preticketId != null, // "tiene chat"
         ),
       );
     }
+
+    // Opcional pero recomendado: ordenar por fecha desc (más nuevo arriba)
+    tmp.sort((a, b) {
+      final ad = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bd = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      return bd.compareTo(ad);
+    });
 
     return tmp;
   }
@@ -529,7 +574,7 @@ class _TicketsScreenState extends State<TicketsScreen> {
       "district": addr.distrito.trim(),
       "executive": "CHIRINOS RAMIREZ ROCIO VIRGINIA",
       "username": "dmagisterial",
-      "password": "20136424867\$",
+      "password": "123456789%",
     });
 
     final resp = await http.post(uri, headers: headers, body: body);
@@ -546,15 +591,19 @@ class _TicketsScreenState extends State<TicketsScreen> {
   void _openSendTicketSheet() {
     final session = context.read<SessionProvider>();
     final g = context.read<GraphSocketProvider>();
+
+    // Controllers (se crean UNA sola vez por apertura del sheet)
     final addrListController = ScrollController();
     final nombreCtrl = TextEditingController();
     final telefonoCtrl = TextEditingController();
     final motivoCtrl = TextEditingController();
     final searchCtrl = TextEditingController();
+
+    // Estado principal (NO se reinicia en cada rebuild del builder)
     bool? isRequerimientos; // null = nada seleccionado
-    String? selectedIncidencia; // opción del dropdown de incidencia
-    String? tipoReq; // lo que ya usabas si te hace falta
+    String? selectedIncidencia;
     bool suggForceHidden = false;
+    bool isSending = false;
 
     const brand = Color(0xFF8B4A9C);
     const radius = 12.0;
@@ -564,115 +613,116 @@ class _TicketsScreenState extends State<TicketsScreen> {
     final addrsAll = _harvestDetectedAddresses(g);
     final catalog = _collectRucCatalog(g, session, addrsAll);
 
+    // Estado para filtros de dirección
+    String? selDpto;
+    String? selProv;
+    String? selDist;
+    _DetectedAddress? selAddr;
+
+    String? selRucKey = isGroup
+        ? ''
+        : (session.ruc ??
+              (addrsAll.isNotEmpty ? (addrsAll.first.ruc ?? '') : ''));
+
+    String ruc = '';
+    String razon = '';
+
+    if ((selRucKey ?? '').isNotEmpty) {
+      final found = catalog.where((e) => e.ruc == selRucKey).toList();
+      if (found.isNotEmpty) {
+        ruc = found.first.ruc;
+        razon = found.first.razon;
+      } else {
+        ruc = selRucKey!;
+        razon = '';
+      }
+    } else if (!isGroup) {
+      ruc = addrsAll.isNotEmpty ? (addrsAll.first.ruc ?? '') : '';
+      razon = addrsAll.isNotEmpty ? (addrsAll.first.razon ?? '') : '';
+    }
+
+    List<String> _uniq(Iterable<String> it) =>
+        it.toSet().where((s) => s.trim().isNotEmpty).toList()..sort();
+
+    Future<void> _submit(BuildContext ctx) async {
+      if (isSending) return; // 👈 candado
+      isSending = true; // empezamos a enviar
+
+      if (selAddr == null) {
+        isSending = false;
+        return;
+      }
+
+      final addr = selAddr!;
+      final sp = session;
+      final nombre = nombreCtrl.text.trim();
+      final tel = telefonoCtrl.text.trim();
+      final motOriginal = motivoCtrl.text.trim();
+
+      if (isRequerimientos == null) {
+        isSending = false;
+        return;
+      }
+
+      final bool req = isRequerimientos!;
+      final bool isIncidenciaLocal = !req;
+
+      String mot = motOriginal;
+      if (isIncidenciaLocal &&
+          selectedIncidencia != null &&
+          selectedIncidencia!.isNotEmpty) {
+        mot = '[${selectedIncidencia!}] $motOriginal';
+      }
+
+      try {
+        final resp = await _sendTicket(
+          sp: sp,
+          addr: addr,
+          ruc: ruc,
+          razon: razon,
+          motivo: mot,
+          telefono: tel,
+          nombre: nombre,
+          isRequerimientos: req,
+        );
+
+        await g.reloadTickets();
+
+        if (!mounted) return;
+        Navigator.pop(ctx);
+
+        final msg =
+            (resp['message'] ??
+                    resp['detail'] ??
+                    'Ticket enviado correctamente')
+                .toString();
+
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(msg)));
+      } catch (e) {
+        Navigator.pop(ctx);
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Error al enviar ticket: $e')));
+        }
+      } finally {
+        isSending = false; // 👈 liberamos el candado
+      }
+    }
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.white,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       builder: (ctx) {
-        // Controllers
-        final nombreCtrl = TextEditingController();
-        final telefonoCtrl = TextEditingController();
-        final motivoCtrl = TextEditingController();
-        final searchCtrl = TextEditingController();
-
-        // Estado selector
-        String? selDpto;
-        String? selProv;
-        String? selDist;
-        _DetectedAddress? selAddr;
-
-        String? selRucKey = isGroup
-            ? ''
-            : (session.ruc ??
-                  (addrsAll.isNotEmpty ? (addrsAll.first.ruc ?? '') : ''));
-
-        String ruc = '';
-        String razon = '';
-
-        if ((selRucKey ?? '').isNotEmpty) {
-          final found = catalog.where((e) => e.ruc == selRucKey).toList();
-          if (found.isNotEmpty) {
-            ruc = found.first.ruc;
-            razon = found.first.razon;
-          } else {
-            ruc = selRucKey!;
-            razon = '';
-          }
-        } else if (!isGroup) {
-          ruc = addrsAll.isNotEmpty ? (addrsAll.first.ruc ?? '') : '';
-          razon = addrsAll.isNotEmpty ? (addrsAll.first.razon ?? '') : '';
-        }
-
-        List<String> _uniq(Iterable<String> it) =>
-            it.toSet().where((s) => s.trim().isNotEmpty).toList()..sort();
-
-        Future<void> _submit() async {
-          if (selAddr == null) return;
-
-          final addr = selAddr!;
-          final sp = session;
-          final nombre = nombreCtrl.text.trim();
-          final tel = telefonoCtrl.text.trim();
-          final motOriginal = motivoCtrl.text.trim();
-
-          if (isRequerimientos == null) {
-            // Por seguridad extra, aunque con canSend no debería pasar
-            return;
-          }
-
-          final bool req = isRequerimientos!;
-          final bool isIncidenciaLocal = !req;
-
-          String mot = motOriginal;
-          if (isIncidenciaLocal &&
-              selectedIncidencia != null &&
-              selectedIncidencia!.isNotEmpty) {
-            // Ejemplo: "[Caída de servicio] Se ve intermitente desde la mañana"
-            mot = '[${selectedIncidencia!}] $motOriginal';
-          }
-
-          try {
-            final resp = await _sendTicket(
-              sp: sp,
-              addr: addr,
-              ruc: ruc,
-              razon: razon,
-              motivo: mot, // 👈 mensaje ya concatenado
-              telefono: tel,
-              nombre: nombre,
-              isRequerimientos: req, // 👈 bool seguro, no-null
-            );
-
-            Navigator.pop(ctx);
-
-            if (mounted) {
-              final msg =
-                  (resp['message'] ??
-                          resp['detail'] ??
-                          'Ticket enviado correctamente')
-                      .toString();
-
-              ScaffoldMessenger.of(
-                context,
-              ).showSnackBar(SnackBar(content: Text(msg)));
-            }
-          } catch (e) {
-            Navigator.pop(ctx);
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Error al enviar ticket: $e')),
-              );
-            }
-          }
-        }
-
         return StatefulBuilder(
           builder: (ctx, setState) {
             final bool isIncidencia = isRequerimientos == false;
             final bool isRequerimiento = isRequerimientos == true;
 
-            // Texto dinámico para el campo de motivo
             final String motivoLabel = isRequerimientos == null
                 ? 'Describa el motivo de su problema'
                 : 'Describa su ${isIncidencia ? 'Incidencia' : 'Requerimiento'}';
@@ -681,7 +731,6 @@ class _TicketsScreenState extends State<TicketsScreen> {
                 ? 'Describe brevemente el problema'
                 : 'Describe brevemente la ${isIncidencia ? 'incidencia' : 'requerimiento'}';
 
-            // Opciones del dropdown de Incidencias
             const List<String> incidenciaOptions = [
               'Caída de servicio',
               'Lentitud',
@@ -745,6 +794,7 @@ class _TicketsScreenState extends State<TicketsScreen> {
                       .where((e) => e.direccion.toLowerCase().contains(q))
                       .take(3)
                       .toList();
+
             if (q.isNotEmpty) {
               bool matches(_DetectedAddress a) =>
                   a.direccion.toLowerCase().contains(q) ||
@@ -756,18 +806,18 @@ class _TicketsScreenState extends State<TicketsScreen> {
             }
 
             final bottom = MediaQuery.of(ctx).viewInsets.bottom;
+
             final canSend =
+                !isSending &&
                 selAddr != null &&
                 motivoCtrl.text.trim().isNotEmpty &&
                 telefonoCtrl.text.trim().isNotEmpty &&
                 nombreCtrl.text.trim().isNotEmpty &&
-                isRequerimientos !=
-                    null && // debe elegir Incidencia o Requerimiento
+                isRequerimientos != null &&
                 (!isIncidencia ||
                     (selectedIncidencia != null &&
                         selectedIncidencia!.isNotEmpty));
 
-            // Tema minimal local
             final localTheme = Theme.of(ctx).copyWith(
               inputDecorationTheme: InputDecorationTheme(
                 isDense: true,
@@ -799,7 +849,7 @@ class _TicketsScreenState extends State<TicketsScreen> {
                   heightFactor: 0.9,
                   child: Column(
                     children: [
-                      // Header simple
+                      // Header
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 16, 8, 12),
                         child: Row(
@@ -822,8 +872,7 @@ class _TicketsScreenState extends State<TicketsScreen> {
                       ),
                       const Divider(height: 1),
 
-                      // CONTENIDO
-                      // ⬇️ NUEVO: Toggle superior
+                      // Toggle Incidencia / Req Soporte
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
                         child: Row(
@@ -833,8 +882,8 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                 label: 'Incidencias',
                                 selected: isIncidencia,
                                 onTap: () => setState(() {
-                                  isRequerimientos = false; // Incidencia
-                                  selectedIncidencia = null; // resetea dropdown
+                                  isRequerimientos = false;
+                                  selectedIncidencia = null;
                                 }),
                               ),
                             ),
@@ -844,9 +893,8 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                 label: 'Req. Soporte',
                                 selected: isRequerimiento,
                                 onTap: () => setState(() {
-                                  isRequerimientos = true; // Requerimiento
-                                  selectedIncidencia =
-                                      null; // no aplica, pero lo limpiamos igual
+                                  isRequerimientos = true;
+                                  selectedIncidencia = null;
                                 }),
                               ),
                             ),
@@ -854,6 +902,7 @@ class _TicketsScreenState extends State<TicketsScreen> {
                         ),
                       ),
 
+                      // CONTENIDO
                       Expanded(
                         child: SingleChildScrollView(
                           padding: const EdgeInsets.fromLTRB(16, 14, 16, 24),
@@ -873,17 +922,20 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                           icon: const Icon(Icons.clear),
                                           onPressed: () {
                                             searchCtrl.clear();
-                                            setState(() {});
+                                            setState(() {
+                                              suggForceHidden = false;
+                                            });
                                           },
                                         ),
                                 ),
                                 onChanged: (_) {
                                   setState(() {
-                                    suggForceHidden =
-                                        false; // al escribir, se vuelven a mostrar
+                                    suggForceHidden = false;
                                   });
                                 },
-                              ), // ⬇️ Panel de sugerencias (hasta 3 resultados)
+                              ),
+
+                              // Sugerencias
                               if (addrSuggest.isNotEmpty) ...[
                                 const SizedBox(height: 6),
                                 Container(
@@ -913,6 +965,7 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                         if (a.provincia.isNotEmpty) a.provincia,
                                         if (a.dpto.isNotEmpty) a.dpto,
                                       ].join(' • ');
+
                                       return ListTile(
                                         dense: true,
                                         title: Text(
@@ -925,10 +978,7 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                             : null,
                                         onTap: () {
                                           setState(() {
-                                            // 1) Selecciona la dirección como si hubieras tocado el RadioListTile
                                             selAddr = a;
-
-                                            // 2) Autorrellena los selects
                                             selDpto = a.dpto.isEmpty
                                                 ? null
                                                 : a.dpto;
@@ -939,7 +989,6 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                                 ? null
                                                 : a.distrito;
 
-                                            // 3) Mantén tu lógica de RUC/Razón (si aplica)
                                             if ((selRucKey ?? '').isEmpty ||
                                                 (a.ruc ?? '') !=
                                                     (selRucKey ?? '')) {
@@ -947,7 +996,6 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                               razon = (a.razon ?? razon);
                                             }
 
-                                            // 4) Opcional: deja el texto de búsqueda con la dirección elegida
                                             searchCtrl.text = a.direccion;
                                             searchCtrl.selection =
                                                 TextSelection.fromPosition(
@@ -957,7 +1005,6 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                                   ),
                                                 );
 
-                                            // 5) Cierra el panel de sugerencias sin cerrar la hoja
                                             suggForceHidden = true;
                                           });
                                         },
@@ -968,14 +1015,14 @@ class _TicketsScreenState extends State<TicketsScreen> {
                               ],
 
                               const SizedBox(height: 12),
-                              Divider(
+                              const Divider(
                                 color: Color.fromARGB(255, 185, 31, 167),
                                 thickness: 1,
                               ),
 
                               const SizedBox(height: 12),
 
-                              // Cliente
+                              // Cliente (si es grupo)
                               if (isGroup) ...[
                                 DropdownButtonFormField<String>(
                                   value: selRucKey,
@@ -1023,8 +1070,6 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                 const SizedBox(height: 12),
                               ],
 
-                              // Filtros
-
                               // Contacto
                               Row(
                                 children: [
@@ -1039,7 +1084,6 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                     ),
                                   ),
                                   const SizedBox(width: 12),
-
                                   Expanded(
                                     child: TextFormField(
                                       controller: telefonoCtrl,
@@ -1085,14 +1129,14 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                 maxLines: 2,
                                 minLines: 1,
                                 decoration: InputDecoration(
-                                  labelText: motivoLabel, // 👈 dinámico
-                                  hintText: motivoHint, // 👈 dinámico
+                                  labelText: motivoLabel,
+                                  hintText: motivoHint,
                                 ),
                                 onChanged: (_) => setState(() {}),
                               ),
                               const SizedBox(height: 10),
 
-                              // Lista de direcciones (compacta con scroll interno: máx. 5 filas)
+                              // Lista de direcciones
                               Container(
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 10,
@@ -1114,7 +1158,6 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                       ),
                                     ),
                                     const SizedBox(height: 6),
-
                                     if (visible.isEmpty)
                                       Padding(
                                         padding: const EdgeInsets.all(8.0),
@@ -1129,14 +1172,12 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                       ConstrainedBox(
                                         constraints: const BoxConstraints(
                                           maxHeight: 72.0 * 5,
-                                        ), // ~5 filas
+                                        ),
                                         child: Scrollbar(
-                                          controller:
-                                              addrListController, // <-- AQUÍ
+                                          controller: addrListController,
                                           thumbVisibility: true,
                                           child: ListView.separated(
-                                            controller:
-                                                addrListController, // <-- Y AQUÍ
+                                            controller: addrListController,
                                             primary: false,
                                             shrinkWrap: true,
                                             physics:
@@ -1244,13 +1285,12 @@ class _TicketsScreenState extends State<TicketsScreen> {
 
                               const SizedBox(height: 10),
 
-                              // Resumen (líneas simples)
                               if (selAddr != null)
                                 Container(
                                   width: double.infinity,
                                   padding: const EdgeInsets.all(12),
                                   decoration: BoxDecoration(
-                                    color: const Color(0x0F8B4A9C), // 6% aprox
+                                    color: const Color(0x0F8B4A9C),
                                     borderRadius: BorderRadius.circular(radius),
                                     border: Border.all(
                                       color: const Color(0x1A8B4A9C),
@@ -1292,7 +1332,7 @@ class _TicketsScreenState extends State<TicketsScreen> {
                           child: SizedBox(
                             width: double.infinity,
                             child: ElevatedButton(
-                              onPressed: canSend ? _submit : null,
+                              onPressed: canSend ? () => _submit(ctx) : null,
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: brand,
                                 foregroundColor: Colors.white,
@@ -1321,7 +1361,12 @@ class _TicketsScreenState extends State<TicketsScreen> {
         );
       },
     ).whenComplete(() {
+      // Limpieza
       addrListController.dispose();
+      nombreCtrl.dispose();
+      telefonoCtrl.dispose();
+      motivoCtrl.dispose();
+      searchCtrl.dispose();
     });
   }
 
@@ -1469,6 +1514,15 @@ class _TicketsScreenState extends State<TicketsScreen> {
 
     // =================== Tickets desde el socket: g.afectados ===================
     final g = context.watch<GraphSocketProvider>();
+    final notifProv = context.watch<NotificationsProvider>();
+    final unreadByPreticket = <int, int>{};
+    for (final n in notifProv.notifications) {
+      if (n.isRead) continue;
+      if (n.route != 'preticket_chat') continue;
+      final id = _preticketIdFromNotifData(n.data);
+      if (id == null) continue;
+      unreadByPreticket[id] = (unreadByPreticket[id] ?? 0) + 1;
+    }
     final views = _mapAfectadosToViews(g.afectados);
     final active = views.where((v) => v.isActive).toList();
     final history = views.where((v) => !v.isActive).toList();
@@ -1627,8 +1681,12 @@ class _TicketsScreenState extends State<TicketsScreen> {
                           ),
                         )
                       else
-                        ...active.map(
-                          (t) => Padding(
+                        ...active.map((t) {
+                          final hasChat = t.preticketId != null;
+                          final unreadMessages = hasChat
+                              ? (unreadByPreticket[t.preticketId!] ?? 0)
+                              : 0;
+                          return Padding(
                             padding: const EdgeInsets.only(bottom: 12),
                             child: TicketCard(
                               code: t.code,
@@ -1639,9 +1697,11 @@ class _TicketsScreenState extends State<TicketsScreen> {
                               isActive: true,
                               serviciosAfectados: t.serviciosAfectados,
                               area: t.area,
+                              hasChat: hasChat,
+                              unreadMessages: unreadMessages,
                               onTap: () {
-                                if (t.isPreTicket && t.preticketId != null) {
-                                  // Solo PRE entra al chat
+                                if (t.preticketId != null) {
+                                  // Abre chat si existe id de preticket
                                   Navigator.push(
                                     context,
                                     MaterialPageRoute(
@@ -1665,8 +1725,8 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                 }
                               },
                             ),
-                          ),
-                        ),
+                          );
+                        }),
 
                       // ---------- Separador / Historial -----------
                       const SizedBox(height: 8),
@@ -1713,8 +1773,12 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                 ],
                               ),
                               const SizedBox(height: 16),
-                              ...group.map(
-                                (t) => Padding(
+                              ...group.map((t) {
+                                final hasChat = t.preticketId != null;
+                                final unreadMessages = hasChat
+                                    ? (unreadByPreticket[t.preticketId!] ?? 0)
+                                    : 0;
+                                return Padding(
                                   padding: const EdgeInsets.only(bottom: 12),
                                   child: TicketCard(
                                     code: t.code,
@@ -1725,9 +1789,10 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                     isActive: false,
                                     serviciosAfectados: t.serviciosAfectados,
                                     area: t.area,
+                                    hasChat: hasChat,
+                                    unreadMessages: unreadMessages,
                                     onTap: () {
-                                      if (t.isPreTicket &&
-                                          t.preticketId != null) {
+                                      if (t.preticketId != null) {
                                         Navigator.push(
                                           context,
                                           MaterialPageRoute(
@@ -1750,8 +1815,8 @@ class _TicketsScreenState extends State<TicketsScreen> {
                                       }
                                     },
                                   ),
-                                ),
-                              ),
+                                );
+                              }),
 
                               const SizedBox(height: 8),
                             ];
@@ -1778,6 +1843,8 @@ class TicketCard extends StatelessWidget {
   final bool isActive;
   final String serviciosAfectados;
   final String area;
+  final bool hasChat;
+  final int unreadMessages;
   final VoidCallback? onTap; // 👈 NUEVO
 
   const TicketCard({
@@ -1790,12 +1857,25 @@ class TicketCard extends StatelessWidget {
     required this.isActive,
     required this.serviciosAfectados,
     required this.area,
+    this.hasChat = false,
+    this.unreadMessages = 0,
     this.onTap, // 👈 NUEVO
   }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
-    final content = Container(
+    const chatColor = Color(0xFF8B4A9C);
+    const unreadColor = Color(0xFFE06A3B);
+    final safeUnread = unreadMessages < 0 ? 0 : unreadMessages;
+    final showChatIndicator = hasChat;
+    final hasUnread = showChatIndicator && safeUnread > 0;
+    final String? chatLabel = showChatIndicator
+        ? (hasUnread
+              ? 'Tienes $safeUnread mensaje nuevo/s'
+              : 'Click para chatear con un asesor')
+        : null;
+
+    Widget content = Container(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
@@ -1872,6 +1952,55 @@ class TicketCard extends StatelessWidget {
         ),
       ),
     );
+
+    if (chatLabel != null) {
+      const double indicatorLift = 10;
+      content = Padding(
+        padding: const EdgeInsets.only(top: indicatorLift),
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            content,
+            Positioned(
+              top: -indicatorLift,
+              left: 12,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: hasUnread ? unreadColor : chatColor,
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(10),
+                    topRight: Radius.circular(10),
+                    bottomRight: Radius.circular(10),
+                    bottomLeft: Radius.circular(2),
+                  ),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Colors.black26,
+                      blurRadius: 6,
+                      offset: Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Text(
+                  chatLabel,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
 
     // Si no hay onTap, se comporta igual que siempre
     if (onTap == null) return content;

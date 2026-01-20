@@ -575,7 +575,6 @@ class _DashboardWidgetState extends State<DashboardWidget>
                     builder: (_, graphProv, __) {
                       return SizedBox(
                         width: double.infinity,
-                        height: 360,
                         child: ServicesPieChartWidget(
                           socketValores: graphProv.valores
                               .map((e) => e.toDouble())

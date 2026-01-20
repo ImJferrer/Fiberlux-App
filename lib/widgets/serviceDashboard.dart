@@ -1,10 +1,12 @@
 import 'package:fiberlux_new_app/view/home.dart';
 import '../view/entidadDashboard.dart';
+import '../view/valoresAgregadosList.dart';
 import 'TweenAnimationBuilder/animatedPieChart.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/SessionProvider.dart';
 import '../providers/graph_socket_provider.dart';
+import 'dart:convert';
 import 'dart:math' as math;
 
 /// —————————————————————————————————————————————————————————————
@@ -32,11 +34,13 @@ class ServicesPieChartWidget extends StatefulWidget {
 
 class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
   int _refreshIndex = 0;
+  bool _showValoresAgregadosList = false;
 
   // Snapshot del “deseo” (no del estado actual del socket)
   bool? _lastWantGroup;
   String? _lastWantRuc;
   String? _lastWantGrupo;
+  String? _lastNoFibraRuc;
 
   // Intenta reconectar el socket según la PREFERENCIA (SessionProvider),
   // no según el estado actual del socket.
@@ -148,17 +152,84 @@ class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
     }
   }
 
+  void _openValoresAgregadosList(
+    String title,
+    List<Map<String, dynamic>> services,
+  ) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) =>
+            ValoresAgregadosListScreen(title: title, services: services),
+      ),
+    );
+  }
+
+  double _fitFontSize({
+    required String text,
+    required TextStyle style,
+    required double maxWidth,
+    required double maxHeight,
+    required TextDirection textDirection,
+    TextScaler? textScaler,
+    double minFontSize = 8,
+    double maxFontSize = 11,
+  }) {
+    if (maxWidth <= 0 || maxHeight <= 0) return minFontSize;
+    double low = minFontSize;
+    double high = maxFontSize;
+    for (var i = 0; i < 6; i++) {
+      final mid = (low + high) / 2;
+      final tp = TextPainter(
+        text: TextSpan(
+          text: text,
+          style: style.copyWith(fontSize: mid),
+        ),
+        textDirection: textDirection,
+        textScaler: textScaler ?? TextScaler.noScaling,
+      )..layout(maxWidth: maxWidth);
+      if (tp.size.height <= maxHeight) {
+        low = mid;
+      } else {
+        high = mid;
+      }
+    }
+    return low;
+  }
+
+  void _maybeFetchNoFibra(SessionProvider session, GraphSocketProvider g) {
+    final ruc = (session.ruc ?? '').trim();
+    final selectedGroup = (g.selectedGroupRuc ?? '').trim();
+    final fallback = (g.ruc ?? '').trim();
+    final targetRuc = ruc.isNotEmpty
+        ? ruc
+        : (selectedGroup.isNotEmpty ? selectedGroup : fallback);
+
+    if (targetRuc.isEmpty) return;
+    if (_lastNoFibraRuc == targetRuc) return;
+    _lastNoFibraRuc = targetRuc;
+    g.fetchNoFibraForRuc(targetRuc);
+  }
+
   Widget _legendSquare({
     required String label,
     required int count,
     required Color color,
     required IconData icon,
     VoidCallback? onTap,
+    bool dense = false,
   }) {
+    final padding = dense ? 8.0 : 14.0;
+    final iconBox = dense ? 26.0 : 35.0;
+    final iconSize = dense ? 18.0 : 26.0;
+    final labelSize = dense ? 9.0 : 10.0;
+    final countSize = dense ? 18.0 : 24.0;
+    final spacing = dense ? 8.0 : 12.0;
+    final labelSpacing = dense ? 1.0 : 2.0;
+    final chevronSize = dense ? 18.0 : 24.0;
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.all(14),
+        padding: EdgeInsets.all(padding),
         decoration: BoxDecoration(
           color: color.withOpacity(0.08),
           borderRadius: BorderRadius.circular(16),
@@ -174,15 +245,15 @@ class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
         child: Row(
           children: [
             Container(
-              width: 35,
-              height: 35,
+              width: iconBox,
+              height: iconBox,
               decoration: BoxDecoration(
                 color: color.withOpacity(0.15),
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: Icon(icon, color: color, size: 26),
+              child: Icon(icon, color: color, size: iconSize),
             ),
-            const SizedBox(width: 12),
+            SizedBox(width: spacing),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -190,17 +261,17 @@ class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
                   Text(
                     label,
                     style: TextStyle(
-                      fontSize: 10,
+                      fontSize: labelSize,
                       letterSpacing: .4,
                       fontWeight: FontWeight.w600,
                       color: color.withOpacity(0.9),
                     ),
                   ),
-                  const SizedBox(height: 2),
+                  SizedBox(height: labelSpacing),
                   Text(
                     '$count',
                     style: TextStyle(
-                      fontSize: 24,
+                      fontSize: countSize,
                       fontWeight: FontWeight.w800,
                       color: color,
                     ),
@@ -208,7 +279,11 @@ class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
                 ],
               ),
             ),
-            const Icon(Icons.chevron_right_rounded, color: Colors.black26),
+            Icon(
+              Icons.chevron_right_rounded,
+              color: Colors.black26,
+              size: chevronSize,
+            ),
           ],
         ),
       ),
@@ -224,6 +299,7 @@ class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _maybeAutoSyncSocket(session, graphProv);
+      _maybeFetchNoFibra(session, graphProv);
     });
 
     final isGroup = session.grupoEconomicoOrRuc; // ← usamos la intención
@@ -234,6 +310,39 @@ class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
       final s = v.toString().trim();
       return int.tryParse(s) ?? 0;
     }
+
+    Map<String, dynamic> _asMap(dynamic v) {
+      if (v is Map) return Map<String, dynamic>.from(v);
+      if (v is String) {
+        final s = v.trim();
+        if (s.startsWith('{') && s.endsWith('}')) {
+          try {
+            final decoded = jsonDecode(s);
+            if (decoded is Map) {
+              return Map<String, dynamic>.from(decoded);
+            }
+          } catch (_) {}
+        }
+      }
+      return {};
+    }
+
+    List<dynamic> _asList(dynamic v) {
+      if (v is List) return v;
+      if (v is String) {
+        final s = v.trim();
+        if (s.startsWith('[') && s.endsWith(']')) {
+          try {
+            final decoded = jsonDecode(s);
+            if (decoded is List) return decoded;
+          } catch (_) {}
+        }
+      }
+      return const [];
+    }
+
+    String _normServiceKey(String s) =>
+        s.trim().replaceAll(RegExp(r'\s+'), ' ').toUpperCase();
 
     // ——————————————————————————————————
     // SERIES para el gráfico
@@ -330,6 +439,207 @@ class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
                 graphProv.currentGroupName ??
                 '')
             .trim();
+
+    final noFibraRaw =
+        graphProv.extra['NoFibra'] ??
+        graphProv.extra['No_Fibra'] ??
+        graphProv.extra['NO_FIBRA'] ??
+        graphProv.extra['noFibra'] ??
+        graphProv.extra['NOFIBRA'] ??
+        graphProv.resumen['NoFibra'] ??
+        graphProv.resumen['noFibra'] ??
+        graphProv.detalle['NoFibra'] ??
+        graphProv.detalle['noFibra'];
+
+    final noFibraMap = _asMap(noFibraRaw);
+
+    // Agrupar por servicio y contar IDs únicos
+    final countByKey = <String, int>{};
+    final displayByKey = <String, String>{};
+    final idsByKey = <String, Set<String>>{};
+    final itemsByKey = <String, List<Map<String, dynamic>>>{};
+
+    final rawDetalle = noFibraMap['Detalle'] ?? noFibraMap['detalle'];
+    final detalleList = _asList(rawDetalle);
+
+    for (final item in detalleList) {
+      if (item is! Map) continue;
+
+      final name = (item['Servicio'] ?? item['servicio'] ?? '')
+          .toString()
+          .trim();
+      if (name.isEmpty) continue;
+
+      final key = _normServiceKey(name);
+      displayByKey.putIfAbsent(key, () => name);
+
+      final id =
+          (item['ID_Servicio'] ??
+                  item['id_servicio'] ??
+                  item['IdServicio'] ??
+                  item['ServicioId'] ??
+                  item['servicio_id'] ??
+                  '')
+              .toString()
+              .trim();
+
+      if (id.isNotEmpty) {
+        final set = idsByKey.putIfAbsent(key, () => <String>{});
+        if (set.add(id)) {
+          countByKey[key] = (countByKey[key] ?? 0) + 1;
+          itemsByKey
+              .putIfAbsent(key, () => <Map<String, dynamic>>[])
+              .add(Map<String, dynamic>.from(item));
+        }
+      } else {
+        countByKey[key] = (countByKey[key] ?? 0) + 1;
+        itemsByKey
+            .putIfAbsent(key, () => <Map<String, dynamic>>[])
+            .add(Map<String, dynamic>.from(item));
+      }
+    }
+
+    // entries finales (con el nombre original “bonito”)
+    final otherEntries =
+        countByKey.entries
+            .map((e) => MapEntry(displayByKey[e.key] ?? e.key, e.value))
+            .toList()
+          ..sort((a, b) => b.value.compareTo(a.value)); // opcional
+    final valoresAgregadosTotal = otherEntries.fold<int>(
+      0,
+      (sum, e) => sum + e.value,
+    );
+    bool _isTipService(String name) {
+      final norm = _normServiceKey(name);
+      if (RegExp(r'TELEFONI[ÍI]A IP').hasMatch(norm)) return true;
+      return RegExp(r'(^|[^A-Z0-9])TIP([0-9]|[^A-Z0-9]|$)').hasMatch(norm);
+    }
+
+    final tipEntries = <MapEntry<String, int>>[];
+    final filteredEntries = <MapEntry<String, int>>[];
+    int tipInsertIndex = -1;
+
+    for (final entry in otherEntries) {
+      if (_isTipService(entry.key)) {
+        tipEntries.add(entry);
+        if (tipInsertIndex == -1) {
+          tipInsertIndex = filteredEntries.length;
+        }
+      } else {
+        filteredEntries.add(entry);
+      }
+    }
+
+    final displayEntries = <_ServiceListItem>[];
+    for (final entry in filteredEntries) {
+      final key = _normServiceKey(entry.key);
+      displayEntries.add(
+        _ServiceListItem(
+          label: entry.key,
+          count: entry.value,
+          items: itemsByKey[key] ?? const [],
+        ),
+      );
+    }
+    if (tipEntries.isNotEmpty) {
+      final tipTotal = tipEntries.fold<int>(0, (sum, e) => sum + e.value);
+      final tipItems = <Map<String, dynamic>>[];
+      final tipChildren = <_ServiceListItem>[];
+
+      for (final entry in tipEntries) {
+        final key = _normServiceKey(entry.key);
+        final items = itemsByKey[key] ?? const [];
+        tipItems.addAll(items);
+        tipChildren.add(
+          _ServiceListItem(label: entry.key, count: entry.value, items: items),
+        );
+      }
+      final insertIndex = tipInsertIndex >= 0 ? tipInsertIndex : 0;
+      displayEntries.insert(
+        insertIndex,
+        _ServiceListItem(
+          label: 'TIP',
+          count: tipTotal,
+          items: tipItems,
+          children: tipChildren,
+        ),
+      );
+    }
+    displayEntries.sort((a, b) {
+      final byCount = b.count.compareTo(a.count);
+      if (byCount != 0) return byCount;
+      return a.label.compareTo(b.label);
+    });
+    final listNameStyle = TextStyle(
+      fontSize: 12,
+      fontWeight: FontWeight.w600,
+      color: Colors.grey[800],
+    );
+    final listChildNameStyle = TextStyle(
+      fontSize: 11,
+      fontWeight: FontWeight.w500,
+      color: Colors.grey[700],
+    );
+    const listCountStyle = TextStyle(
+      fontSize: 12,
+      fontWeight: FontWeight.w800,
+      color: Color(0xFF8B4A9C),
+    );
+    Widget _countChevron(int count) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(count.toString(), style: listCountStyle),
+          const SizedBox(width: 4),
+          const Icon(
+            Icons.chevron_right_rounded,
+            size: 18,
+            color: Colors.black38,
+          ),
+        ],
+      );
+    }
+
+    Widget _serviceRow({
+      required String label,
+      required TextStyle labelStyle,
+      required int count,
+      required VoidCallback onTap,
+      EdgeInsetsGeometry padding = const EdgeInsets.symmetric(vertical: 4),
+    }) {
+      return InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: padding,
+          child: Row(
+            children: [
+              Expanded(child: Text(label, style: labelStyle)),
+              _countChevron(count),
+            ],
+          ),
+        ),
+      );
+    }
+
+    Widget _animatedListItem({required int index, required Widget child}) {
+      final delay = (index * 0.06).clamp(0.0, 0.6).toDouble();
+      return TweenAnimationBuilder<double>(
+        tween: Tween(begin: 0, end: 1),
+        duration: const Duration(milliseconds: 420),
+        curve: Interval(delay, 1.0, curve: Curves.easeOut),
+        builder: (context, value, animatedChild) {
+          final dx = (1 - value) * -24;
+          return Opacity(
+            opacity: value,
+            child: Transform.translate(
+              offset: Offset(dx, 0),
+              child: animatedChild,
+            ),
+          );
+        },
+        child: child,
+      );
+    }
 
     final socketControls = Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
@@ -509,10 +819,148 @@ class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
             ],
           ),
         ),
+        if (otherEntries.isNotEmpty) ...[
+          Padding(
+            padding: const EdgeInsets.only(
+              left: 10,
+              right: 10,
+              bottom: 6,
+              top: 8,
+            ),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Servicio Valores Agregados',
+                    style: TextStyle(
+                      color: Color(0xFFB91FA7),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 140,
+                  height: 60,
+                  child: _legendSquare(
+                    label: 'SVA',
+                    count: valoresAgregadosTotal,
+                    color: const Color(0xFFB91FA7),
+                    icon: Icons.bar_chart,
+                    dense: true,
+                    onTap: () {
+                      setState(() {
+                        _showValoresAgregadosList = !_showValoresAgregadosList;
+                      });
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 260),
+            switchInCurve: Curves.easeOut,
+            switchOutCurve: Curves.easeIn,
+            transitionBuilder: (child, animation) {
+              return SizeTransition(
+                sizeFactor: animation,
+                axisAlignment: -1.0,
+                child: FadeTransition(opacity: animation, child: child),
+              );
+            },
+            child: _showValoresAgregadosList
+                ? Padding(
+                    key: const ValueKey('valores-agregados-list'),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: displayEntries.length,
+                      separatorBuilder: (context, index) =>
+                          const Divider(height: 12),
+                      itemBuilder: (context, index) {
+                        final item = displayEntries[index];
+                        Widget itemWidget;
+                        if (item.children.isNotEmpty) {
+                          itemWidget = Theme(
+                            data: Theme.of(
+                              context,
+                            ).copyWith(dividerColor: Colors.transparent),
+                            child: ExpansionTile(
+                              controlAffinity: ListTileControlAffinity.leading,
+                              tilePadding: EdgeInsets.zero,
+                              childrenPadding: const EdgeInsets.only(
+                                left: 12,
+                                right: 0,
+                                bottom: 6,
+                              ),
+                              title: Text(item.label, style: listNameStyle),
+                              trailing: GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () => _openValoresAgregadosList(
+                                  item.label,
+                                  item.items,
+                                ),
+                                child: _countChevron(item.count),
+                              ),
+                              children: item.children.map((entry) {
+                                return _serviceRow(
+                                  label: entry.label,
+                                  labelStyle: listChildNameStyle,
+                                  count: entry.count,
+                                  onTap: () => _openValoresAgregadosList(
+                                    entry.label,
+                                    entry.items,
+                                  ),
+                                );
+                              }).toList(),
+                            ),
+                          );
+                        } else {
+                          itemWidget = _serviceRow(
+                            label: item.label,
+                            labelStyle: listNameStyle,
+                            count: item.count,
+                            onTap: () => _openValoresAgregadosList(
+                              item.label,
+                              item.items,
+                            ),
+                          );
+                        }
+                        return _animatedListItem(
+                          index: index,
+                          child: itemWidget,
+                        );
+                      },
+                    ),
+                  )
+                : const SizedBox.shrink(
+                    key: ValueKey('valores-agregados-empty'),
+                  ),
+          ),
+          const SizedBox(height: 12),
+        ],
+
         const SizedBox(height: 16),
       ],
     );
   }
+}
+
+class _ServiceListItem {
+  final String label;
+  final int count;
+  final List<_ServiceListItem> children;
+  final List<Map<String, dynamic>> items;
+
+  const _ServiceListItem({
+    required this.label,
+    required this.count,
+    this.children = const [],
+    this.items = const [],
+  });
 }
 
 /// Pintor para dona con espacios

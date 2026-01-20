@@ -5,10 +5,7 @@ import 'dart:async';
 class SplashScreen extends StatefulWidget {
   final Widget nextScreen; // Pantalla a la que navegar después del splash
 
-  const SplashScreen({
-    Key? key,
-    required this.nextScreen,
-  }) : super(key: key);
+  const SplashScreen({Key? key, required this.nextScreen}) : super(key: key);
 
   @override
   State<SplashScreen> createState() => _SplashScreenState();
@@ -43,14 +40,16 @@ class _SplashScreenState extends State<SplashScreen>
       duration: const Duration(milliseconds: 800), // Duración del fade
     );
 
-    _fadeAnimation =
-        Tween<double>(begin: 0.0, end: 1.0).animate(_fadeController);
+    _fadeAnimation = Tween<double>(
+      begin: 0.0,
+      end: 1.0,
+    ).animate(_fadeController);
 
     // Actualizar en cada frame
     _animationController.addListener(_updatePoints);
 
     // Programar la navegación después de un tiempo
-    Timer(const Duration(seconds: 7), () {
+    Timer(const Duration(seconds: 3), () {
       // Iniciar fade in
       _fadeController.forward().then((_) {
         // Navegar a la siguiente pantalla cuando el fade in termine
@@ -60,11 +59,8 @@ class _SplashScreenState extends State<SplashScreen>
                 widget.nextScreen,
             transitionsBuilder:
                 (context, animation, secondaryAnimation, child) {
-              return FadeTransition(
-                opacity: animation,
-                child: child,
-              );
-            },
+                  return FadeTransition(opacity: animation, child: child);
+                },
             transitionDuration: const Duration(milliseconds: 500),
           ),
         );
@@ -128,7 +124,8 @@ class _SplashScreenState extends State<SplashScreen>
             bottom: 0,
             left: 0,
             right: 0,
-            height: MediaQuery.of(context).size.height *
+            height:
+                MediaQuery.of(context).size.height *
                 0.4, // Ajustar según la imagen
             child: CustomPaint(
               painter: SimplePlexusPainter(_points, connectionDistance),
@@ -137,12 +134,7 @@ class _SplashScreenState extends State<SplashScreen>
           ),
 
           // Logo centrado
-          Center(
-            child: Image.asset(
-              'assets/logos/logoFiber.png',
-              width: 200,
-            ),
-          ),
+          Center(child: Image.asset('assets/logos/logoFiber.png', width: 200)),
 
           // Overlay para fade out
           AnimatedBuilder(

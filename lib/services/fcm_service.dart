@@ -9,6 +9,9 @@ class FcmService {
   static final FcmService instance = FcmService._();
 
   static const _kLastTokenKeyPrefix = 'fcm_last_token_';
+  String? _lastToken;
+
+  String? get lastToken => _lastToken;
 
   StreamSubscription<String>? _refreshSub;
 
@@ -29,17 +32,20 @@ class FcmService {
       );
     }
 
-    return FirebaseMessaging.instance.getToken();
+    final token = await FirebaseMessaging.instance.getToken();
+    _lastToken = token;
+    return token;
   }
 
   /// Registra token FCM para el RUC y se suscribe a onTokenRefresh.
-  Future<void> ensureRegistered({
+  Future<String?> ensureRegistered({
     required String ruc,
     String? grupo,
     bool vistaRuc = false,
   }) async {
     final token = await _getTokenRespectingPermissions();
-    if (token == null || token.isEmpty) return;
+    _lastToken = token;
+    if (token == null || token.isEmpty) return token;
 
     // Actualizamos el "contexto" actual de FCM
     _currentRuc = ruc;
@@ -73,6 +79,8 @@ class FcmService {
       final currentRuc = _currentRuc;
       if (currentRuc == null || newToken.isEmpty) return;
 
+      _lastToken = newToken;
+
       try {
         await ApiService.sendFcmRegistration(
           ruc: currentRuc,
@@ -86,6 +94,8 @@ class FcmService {
         await p.setString(k, newToken);
       } catch (_) {}
     });
+
+    return token;
   }
 
   void dispose() {

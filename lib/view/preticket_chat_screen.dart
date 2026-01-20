@@ -2,14 +2,17 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:fiberlux_new_app/models/preticket_chat.dart';
+import 'package:fiberlux_new_app/providers/notifications_provider.dart';
 import 'package:fiberlux_new_app/services/preticket_historial.dart';
 import 'package:flutter/material.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../providers/SessionProvider.dart';
+import '../services/fcm_service.dart';
 import '../services/preticket_local_store.dart';
 
 class PreticketChatScreen extends StatefulWidget {
@@ -285,6 +288,11 @@ class _PreticketChatScreenState extends State<PreticketChatScreen> {
       return;
     }
 
+    context.read<NotificationsProvider>().registerLocalSentPreticketMessage(
+          preticketId: widget.preticketId,
+          text: text,
+        );
+
     setState(() => _sending = true);
 
     try {
@@ -293,6 +301,9 @@ class _PreticketChatScreenState extends State<PreticketChatScreen> {
         'https://arcus.fiberlux.pe:8080/api/v1/client/preticket-message/send',
       );
 
+      String? deviceToken = FcmService.instance.lastToken;
+      deviceToken ??= await FirebaseMessaging.instance.getToken();
+
       final headers = <String, String>{
         'Content-Type': 'application/json',
         'Accept': 'application/json',
@@ -300,12 +311,18 @@ class _PreticketChatScreenState extends State<PreticketChatScreen> {
           'Authorization': 'Bearer ${session.accessToken}',
       };
 
-      final body = jsonEncode({
+      final payload = {
         'preticket': widget.preticketId,
         // 👇 IMPORTANTE: aquí va user_id, como en el ejemplo que ya probaron
         'user_id': _myUserId,
         'message': text,
-      });
+      };
+
+      if (deviceToken != null && deviceToken.isNotEmpty) {
+        payload['sender_device_token'] = deviceToken;
+      }
+
+      final body = jsonEncode(payload);
 
       debugPrint('📤 [API] Enviando mensaje: $body');
 
@@ -380,7 +397,7 @@ class _PreticketChatScreenState extends State<PreticketChatScreen> {
               firstServiceId != null
                   ? 'Servicio $firstServiceId'
                   : (widget.ticketCode != null
-                        ? 'Chat ${widget.ticketCode}'
+                        ? 'Chat T-0011036'
                         : 'Chat del ticket'),
               style: const TextStyle(
                 color: Colors.black87,
