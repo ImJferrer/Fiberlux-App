@@ -219,7 +219,7 @@ class ValoresAgregadosDetailScreen extends StatelessWidget {
   final Map<String, dynamic> service;
 
   const ValoresAgregadosDetailScreen({super.key, required this.service});
-
+  //
   @override
   Widget build(BuildContext context) {
     final id = _serviceId(service);
