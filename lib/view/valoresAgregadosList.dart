@@ -27,6 +27,68 @@ String _serviceEstado(Map<String, dynamic> svc) {
   return _textValue(raw);
 }
 
+Color _estadoColor(Map<String, dynamic> svc) {
+  final estado = _serviceEstado(svc).toLowerCase();
+  if (estado.contains('activo')) {
+    return Colors.green;
+  }
+  if (estado.contains('instal')) {
+    return const Color(0xFF4FC3F7);
+  }
+  return Colors.amber;
+}
+
+Widget _estadoBadge(Map<String, dynamic> svc) {
+  final label = _serviceEstado(svc);
+  final color = _estadoColor(svc);
+  return ConstrainedBox(
+    constraints: const BoxConstraints(maxWidth: 90),
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.14),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(0.6)),
+      ),
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          color: color,
+        ),
+      ),
+    ),
+  );
+}
+
+Widget _cantidadBadge(Map<String, dynamic> svc) {
+  final label = '${_serviceCantidad(svc)} - ${_serviceUm(svc)}';
+  return ConstrainedBox(
+    constraints: const BoxConstraints(maxWidth: 90),
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.grey.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.withOpacity(0.45)),
+      ),
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          color: Colors.grey[700],
+        ),
+      ),
+    ),
+  );
+}
+
 String _serviceCantidad(Map<String, dynamic> svc) {
   final raw = svc['Cantidad'] ?? svc['cantidad'];
   return _textValue(raw);
@@ -86,36 +148,21 @@ class ValoresAgregadosListScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final items = _sortedServices();
     final borderColor = Colors.grey.shade200;
-    const accent = Color(0xFF8B4A9C);
     return Scaffold(
       backgroundColor: const Color(0xFFF6F5F8),
-      appBar: AppBar(title: const Text('Servicios agregados')),
+      appBar: AppBar(
+        toolbarHeight: 48,
+        titleSpacing: 12,
+        title: Text(
+          title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+        ),
+      ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black12,
-                  blurRadius: 6,
-                  offset: Offset(0, 2),
-                ),
-              ],
-            ),
-            child: Text(
-              title,
-              softWrap: true,
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-                color: accent,
-              ),
-            ),
-          ),
           Expanded(
             child: items.isEmpty
                 ? const Center(child: Text('Sin servicios'))
@@ -136,72 +183,79 @@ class ValoresAgregadosListScreen extends StatelessWidget {
                         child: Material(
                           color: Colors.white,
                           borderRadius: BorderRadius.circular(12),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(12),
-                            onTap: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute(
-                                  builder: (_) => ValoresAgregadosDetailScreen(
-                                    service: item,
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: borderColor),
+                            ),
+                            child: Stack(
+                              children: [
+                                Padding(
+                                  padding: const EdgeInsets.only(
+                                    right: 196,
+                                    top: 4,
+                                  ),
+                                  child: Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      SizedBox(
+                                        width: 36,
+                                        height: 36,
+                                        child: Center(
+                                          child: Container(
+                                            width: 14,
+                                            height: 14,
+                                            decoration: BoxDecoration(
+                                              color: _estadoColor(item),
+                                              shape: BoxShape.circle,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              _serviceId(item),
+                                              softWrap: true,
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.w700,
+                                                fontSize: 14,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              _addressText(item),
+                                              softWrap: true,
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: Colors.grey[700],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
-                              );
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: borderColor),
-                              ),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Container(
-                                    width: 36,
-                                    height: 36,
-                                    decoration: BoxDecoration(
-                                      color: accent.withOpacity(0.10),
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                    child: const Icon(
-                                      Icons.location_on_outlined,
-                                      size: 20,
-                                      color: accent,
-                                    ),
+                                Positioned(
+                                  top: 0,
+                                  right: 0,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      _cantidadBadge(item),
+                                      const SizedBox(width: 6),
+                                      _estadoBadge(item),
+                                    ],
                                   ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          _serviceId(item),
-                                          softWrap: true,
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.w700,
-                                            fontSize: 14,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          _addressText(item),
-                                          softWrap: true,
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: Colors.grey[700],
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  const Icon(
-                                    Icons.chevron_right_rounded,
-                                    color: Colors.black26,
-                                  ),
-                                ],
-                              ),
+                                ),
+                              ],
                             ),
                           ),
                         ),

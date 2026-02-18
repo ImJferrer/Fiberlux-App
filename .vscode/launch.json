@@ -1,13 +1,25 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "fiberlux_new_app",
+            "name": "fiberlux_new_app (debug - telefono)",
             "request": "launch",
-            "type": "dart"
+            "type": "dart",
+            "flutterMode": "debug",
+            "deviceId": "AWNQCP3812202220"
+        },
+        {
+            "name": "fiberlux_new_app (debug - emulador)",
+            "request": "launch",
+            "type": "dart",
+            "flutterMode": "debug",
+            "deviceId": "emulator-5554"
+        },
+        {
+            "name": "fiberlux_new_app (attach - telefono)",
+            "request": "attach",
+            "type": "dart",
+            "deviceId": "AWNQCP3812202220"
         },
         {
             "name": "fiberlux_new_app (profile mode)",

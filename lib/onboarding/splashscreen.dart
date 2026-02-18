@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'dart:math' as math;
 import 'dart:async';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import '../view/login.dart'; // ajusta el path según tu estructura
 
 class SplashScreen extends StatefulWidget {
   final Widget nextScreen; // Pantalla a la que navegar después del splash
@@ -49,14 +53,47 @@ class _SplashScreenState extends State<SplashScreen>
     _animationController.addListener(_updatePoints);
 
     // Programar la navegación después de un tiempo
-    Timer(const Duration(seconds: 3), () {
-      // Iniciar fade in
+    // Reemplaza el Timer en initState por este:
+    Timer(const Duration(seconds: 3), () async {
+      Widget destination = widget.nextScreen;
+
+      // Solo verificar si el nextScreen NO es LoginScreen
+      // (si ya va al login, no tiene sentido verificar)
+      if (widget.nextScreen is! LoginScreen) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          final numeroDocumento = prefs.getString('saved_username') ?? '';
+
+          if (numeroDocumento.isNotEmpty) {
+            final response = await http
+                .post(
+                  Uri.parse('https://zeus.fiberlux.pe/api/verify-session'),
+                  headers: {'Content-Type': 'application/json'},
+                  body: jsonEncode({'numeroDocumento': numeroDocumento}),
+                )
+                .timeout(const Duration(seconds: 5));
+
+            if (response.statusCode == 200) {
+              final data = jsonDecode(response.body);
+              if (data['sessionValid'] == false) {
+                // Pánico activado: limpiar sesión y mandar al login
+                await prefs.clear();
+                destination = const LoginScreen();
+              }
+            }
+          }
+        } catch (_) {
+          // Si el servidor no responde, dejamos pasar (no bloqueamos el acceso)
+        }
+      }
+
+      if (!mounted) return;
       _fadeController.forward().then((_) {
-        // Navegar a la siguiente pantalla cuando el fade in termine
+        if (!mounted) return;
         Navigator.of(context).pushReplacement(
           PageRouteBuilder(
             pageBuilder: (context, animation, secondaryAnimation) =>
-                widget.nextScreen,
+                destination,
             transitionsBuilder:
                 (context, animation, secondaryAnimation, child) {
                   return FadeTransition(opacity: animation, child: child);

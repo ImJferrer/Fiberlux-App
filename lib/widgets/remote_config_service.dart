@@ -37,7 +37,7 @@ class RemoteConfigService {
     await _rc.fetchAndActivate();
   }
 
-  // Getters cómodos
+  // Getters
   bool get showAiMenu => _rc.getBool('show_ai_menu');
   String get aiMenuTitle => _rc.getString('ai_menu_title').trim().isEmpty
       ? _defaults['ai_menu_title'] as String

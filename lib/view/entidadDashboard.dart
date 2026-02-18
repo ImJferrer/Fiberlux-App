@@ -589,7 +589,7 @@ class EntidadDashboardState extends State<EntidadDashboard> {
   }) async {
     final client = HttpClient()
       ..connectionTimeout = Duration(milliseconds: connectTimeoutMs);
-    final uri = Uri.parse('http://200.1.179.157:3000/BW');
+    final uri = Uri.parse('https://zeus.fiberlux.pe/BW');
 
     try {
       final req = await client.postUrl(uri);
@@ -4501,7 +4501,7 @@ class _ServicioDetailScreenState extends State<ServicioDetailScreen> {
     final client = HttpClient()
       ..connectionTimeout = Duration(milliseconds: connectTimeoutMs);
 
-    final uri = Uri.parse('http://200.1.179.157:3000/BW');
+    final uri = Uri.parse('https://zeus.fiberlux.pe/BW');
 
     try {
       final req = await client.postUrl(uri);
@@ -5433,12 +5433,26 @@ class _ServicioDetailScreenState extends State<ServicioDetailScreen> {
 
     return SafeArea(
       child: Scaffold(
-        floatingActionButton: FloatingActionButton.extended(
-          heroTag: 'fab-acciones-pruebas',
-          onPressed: _onDiagnosticoCompleto,
-          icon: const Icon(Icons.build),
-          label: const Text('Autodiagnóstico'),
-          tooltip: 'Gestiona tu Servicio',
+        floatingActionButton: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FloatingActionButton.extended(
+              heroTag: 'fab-acciones-pruebas',
+              onPressed: _onDiagnosticoCompleto,
+              icon: const Icon(Icons.build),
+              label: const Text('Autodiagnóstico'),
+              tooltip: 'Gestiona tu Servicio',
+            ),
+            const SizedBox(height: 6),
+            const SizedBox(
+              width: 180,
+              child: Text(
+                'Solo disponible para dispositivos compatibles',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 10, color: Colors.black54),
+              ),
+            ),
+          ],
         ),
 
         backgroundColor: Color(0xFFF8F9FA),

@@ -14,7 +14,7 @@ class ApiException implements Exception {
 
 class ApiService {
   static const String _baseArcus = 'https://arcus.fiberlux.pe:8080';
-  static const String _baseFiberlux = 'http://200.1.179.157:3000';
+  static const String _baseFiberlux = 'https://zeus.fiberlux.pe/';
 
   /// Login contra Arcus
   static Future<Map<String, dynamic>> arcusLogin({
@@ -59,7 +59,7 @@ class ApiService {
 
   /// Registro de token FCM por RUC
   ///
-  /// POST -> http://200.1.179.157:3000/FCM
+  /// POST -> https://zeus.fiberlux.pe/FCM
   /// Body:
   /// {
   ///   "ruc": "<string>",

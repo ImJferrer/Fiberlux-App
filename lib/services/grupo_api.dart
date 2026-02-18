@@ -36,7 +36,7 @@ class ResumenGrupo {
 }
 
 class GrupoApi {
-  static final Uri _url = Uri.parse('http://200.1.179.157:3000/App/');
+  static final Uri _url = Uri.parse('https://zeus.fiberlux.pe/App/');
 
   /// Llama a /App/ con {"GRUPO": "<nombre exacto>"}
   static Future<ResumenGrupo> fetchResumen(String grupo) async {

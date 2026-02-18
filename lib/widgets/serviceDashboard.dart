@@ -290,6 +290,54 @@ class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
     );
   }
 
+  Widget _svaSquare({
+    required int count,
+    VoidCallback? onTap,
+    bool dense = false,
+  }) {
+    final padding = dense ? 8.0 : 14.0;
+    final countSize = dense ? 18.0 : 24.0;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: EdgeInsets.all(padding),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFB91FA7), width: 1.4),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.06),
+              blurRadius: 8,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Text(
+              '$count',
+              style: TextStyle(
+                fontSize: countSize,
+                fontWeight: FontWeight.w800,
+                color: Colors.black87,
+              ),
+            ),
+            const Positioned(
+              right: 0,
+              child: Icon(
+                Icons.chevron_right_rounded,
+                size: 20,
+                color: Colors.black38,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final graphProv = context.watch<GraphSocketProvider>();
@@ -641,6 +689,14 @@ class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
       );
     }
 
+    const maxVisibleItems = 4;
+    const listItemHeight = 35.0;
+    const listSpacing = 12.0;
+    final listMaxHeight =
+        (listItemHeight * maxVisibleItems) +
+        (listSpacing * (maxVisibleItems - 1));
+    final listScrollable = displayEntries.length > maxVisibleItems;
+
     final socketControls = Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
       child: Row(
@@ -710,7 +766,7 @@ class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
         const Padding(
           padding: EdgeInsets.only(left: 10, top: 16, bottom: 4),
           child: Text(
-            'Estado de servicios',
+            'Servicios de Conectividad',
             style: TextStyle(
               color: Color(0xFFB91FA7),
               fontSize: 17,
@@ -746,14 +802,6 @@ class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
                               fontWeight: FontWeight.bold,
                               fontSize: 30,
                               color: Colors.grey[800],
-                            ),
-                          ),
-                          Text(
-                            'SERVICIOS',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w500,
-                              color: Colors.grey[600],
                             ),
                           ),
                         ],
@@ -819,6 +867,8 @@ class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
             ],
           ),
         ),
+        SizedBox(height: 24),
+
         if (otherEntries.isNotEmpty) ...[
           Padding(
             padding: const EdgeInsets.only(
@@ -827,120 +877,145 @@ class _ServicesPieChartWidgetState extends State<ServicesPieChartWidget> {
               bottom: 6,
               top: 8,
             ),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Expanded(
-                  child: Text(
-                    'Servicio Valores Agregados',
-                    style: TextStyle(
-                      color: Color(0xFFB91FA7),
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
+                const Text(
+                  'Servicios de Valor Agregado',
+                  style: TextStyle(
+                    color: Color(0xFFB91FA7),
+                    fontSize: 17,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
-                const SizedBox(width: 8),
-                SizedBox(
-                  width: 140,
-                  height: 60,
-                  child: _legendSquare(
-                    label: 'SVA',
-                    count: valoresAgregadosTotal,
-                    color: const Color(0xFFB91FA7),
-                    icon: Icons.bar_chart,
-                    dense: true,
-                    onTap: () {
-                      setState(() {
-                        _showValoresAgregadosList = !_showValoresAgregadosList;
-                      });
-                    },
-                  ),
+                const SizedBox(height: 8),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Transform.translate(
+                      offset: Offset(0, _showValoresAgregadosList ? -5 : 0),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 220),
+                        curve: Curves.easeOut,
+                        width: _showValoresAgregadosList ? 120 : 170,
+                        constraints: BoxConstraints(
+                          minHeight: _showValoresAgregadosList ? 60 : 72,
+                        ),
+                        child: _svaSquare(
+                          count: valoresAgregadosTotal,
+                          dense: _showValoresAgregadosList,
+                          onTap: () {
+                            setState(() {
+                              _showValoresAgregadosList =
+                                  !_showValoresAgregadosList;
+                            });
+                          },
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 260),
+                        switchInCurve: Curves.easeOut,
+                        switchOutCurve: Curves.easeIn,
+                        transitionBuilder: (child, animation) {
+                          return SizeTransition(
+                            sizeFactor: animation,
+                            axisAlignment: -1.0,
+                            child: FadeTransition(
+                              opacity: animation,
+                              child: child,
+                            ),
+                          );
+                        },
+                        child: _showValoresAgregadosList
+                            ? ConstrainedBox(
+                                key: const ValueKey('valores-agregados-list'),
+                                constraints: listScrollable
+                                    ? BoxConstraints(maxHeight: listMaxHeight)
+                                    : const BoxConstraints(),
+                                child: ListView.separated(
+                                  shrinkWrap: true,
+                                  physics: listScrollable
+                                      ? const ClampingScrollPhysics()
+                                      : const NeverScrollableScrollPhysics(),
+                                  itemCount: displayEntries.length,
+                                  separatorBuilder: (context, index) =>
+                                      const Divider(height: 12),
+                                  itemBuilder: (context, index) {
+                                    final item = displayEntries[index];
+                                    Widget itemWidget;
+                                    if (item.children.isNotEmpty) {
+                                      itemWidget = Theme(
+                                        data: Theme.of(context).copyWith(
+                                          dividerColor: Colors.transparent,
+                                        ),
+                                        child: ExpansionTile(
+                                          controlAffinity:
+                                              ListTileControlAffinity.leading,
+                                          tilePadding: EdgeInsets.zero,
+                                          childrenPadding:
+                                              const EdgeInsets.only(
+                                                left: 12,
+                                                right: 0,
+                                                bottom: 6,
+                                              ),
+                                          title: Text(
+                                            item.label,
+                                            style: listNameStyle,
+                                          ),
+                                          trailing: GestureDetector(
+                                            behavior: HitTestBehavior.opaque,
+                                            onTap: () =>
+                                                _openValoresAgregadosList(
+                                                  item.label,
+                                                  item.items,
+                                                ),
+                                            child: _countChevron(item.count),
+                                          ),
+                                          children: item.children.map((entry) {
+                                            return _serviceRow(
+                                              label: entry.label,
+                                              labelStyle: listChildNameStyle,
+                                              count: entry.count,
+                                              onTap: () =>
+                                                  _openValoresAgregadosList(
+                                                    entry.label,
+                                                    entry.items,
+                                                  ),
+                                            );
+                                          }).toList(),
+                                        ),
+                                      );
+                                    } else {
+                                      itemWidget = _serviceRow(
+                                        label: item.label,
+                                        labelStyle: listNameStyle,
+                                        count: item.count,
+                                        onTap: () => _openValoresAgregadosList(
+                                          item.label,
+                                          item.items,
+                                        ),
+                                      );
+                                    }
+                                    return _animatedListItem(
+                                      index: index,
+                                      child: itemWidget,
+                                    );
+                                  },
+                                ),
+                              )
+                            : const SizedBox.shrink(
+                                key: ValueKey('valores-agregados-empty'),
+                              ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
           ),
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 260),
-            switchInCurve: Curves.easeOut,
-            switchOutCurve: Curves.easeIn,
-            transitionBuilder: (child, animation) {
-              return SizeTransition(
-                sizeFactor: animation,
-                axisAlignment: -1.0,
-                child: FadeTransition(opacity: animation, child: child),
-              );
-            },
-            child: _showValoresAgregadosList
-                ? Padding(
-                    key: const ValueKey('valores-agregados-list'),
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                    child: ListView.separated(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: displayEntries.length,
-                      separatorBuilder: (context, index) =>
-                          const Divider(height: 12),
-                      itemBuilder: (context, index) {
-                        final item = displayEntries[index];
-                        Widget itemWidget;
-                        if (item.children.isNotEmpty) {
-                          itemWidget = Theme(
-                            data: Theme.of(
-                              context,
-                            ).copyWith(dividerColor: Colors.transparent),
-                            child: ExpansionTile(
-                              controlAffinity: ListTileControlAffinity.leading,
-                              tilePadding: EdgeInsets.zero,
-                              childrenPadding: const EdgeInsets.only(
-                                left: 12,
-                                right: 0,
-                                bottom: 6,
-                              ),
-                              title: Text(item.label, style: listNameStyle),
-                              trailing: GestureDetector(
-                                behavior: HitTestBehavior.opaque,
-                                onTap: () => _openValoresAgregadosList(
-                                  item.label,
-                                  item.items,
-                                ),
-                                child: _countChevron(item.count),
-                              ),
-                              children: item.children.map((entry) {
-                                return _serviceRow(
-                                  label: entry.label,
-                                  labelStyle: listChildNameStyle,
-                                  count: entry.count,
-                                  onTap: () => _openValoresAgregadosList(
-                                    entry.label,
-                                    entry.items,
-                                  ),
-                                );
-                              }).toList(),
-                            ),
-                          );
-                        } else {
-                          itemWidget = _serviceRow(
-                            label: item.label,
-                            labelStyle: listNameStyle,
-                            count: item.count,
-                            onTap: () => _openValoresAgregadosList(
-                              item.label,
-                              item.items,
-                            ),
-                          );
-                        }
-                        return _animatedListItem(
-                          index: index,
-                          child: itemWidget,
-                        );
-                      },
-                    ),
-                  )
-                : const SizedBox.shrink(
-                    key: ValueKey('valores-agregados-empty'),
-                  ),
-          ),
-          const SizedBox(height: 12),
         ],
 
         const SizedBox(height: 16),

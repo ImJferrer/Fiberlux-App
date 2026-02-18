@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 class AcordeonService {
-  static const String _baseUrl = 'http://200.1.179.157:3000';
+  static const String _baseUrl = 'https://zeus.fiberlux.pe/';
 
   static Future<http.Response> getAcordeonData(
       String ruc, String parametro) async {

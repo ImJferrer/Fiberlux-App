@@ -12,6 +12,8 @@ class GraphSocketProvider extends ChangeNotifier {
   bool _usingGroup = false;
   bool _isConnected = false;
   bool _isConnecting = false;
+  DateTime? _lastPayloadAt;
+  int _connectAttemptSerial = 0;
   void Function(String)?
   onGroupResolved; // callback opcional para persistir grupo
   String? _lastGroupPersisted; // evita notificar repetido
@@ -112,12 +114,25 @@ class GraphSocketProvider extends ChangeNotifier {
 
   Map<String, dynamic> _asMapDeep(dynamic v) {
     if (v is Map) return Map<String, dynamic>.from(v);
+    if (v is List) {
+      for (final it in v) {
+        final asMap = _asMapDeep(it);
+        if (asMap.isNotEmpty) return asMap;
+      }
+      return <String, dynamic>{};
+    }
     if (v is String) {
       final s = v.trim();
       if (s.isNotEmpty && (s.startsWith('{') || s.startsWith('['))) {
         try {
           final dec = jsonDecode(s);
           if (dec is Map) return Map<String, dynamic>.from(dec);
+          if (dec is List) {
+            for (final it in dec) {
+              final asMap = _asMapDeep(it);
+              if (asMap.isNotEmpty) return asMap;
+            }
+          }
         } catch (_) {}
       }
     }
@@ -125,17 +140,77 @@ class GraphSocketProvider extends ChangeNotifier {
   }
 
   Map<String, dynamic>? _asMapIf(dynamic v) {
-    if (v is Map) return Map<String, dynamic>.from(v);
-    if (v is String) {
-      final s = v.trim();
-      if (s.startsWith('{') && s.endsWith('}')) {
-        try {
-          final dec = jsonDecode(s);
-          if (dec is Map) return Map<String, dynamic>.from(dec);
-        } catch (_) {}
-      }
+    final m = _asMapDeep(v);
+    return m.isEmpty ? null : m;
+  }
+
+  String _short(dynamic data, {int max = 220}) {
+    String s;
+    try {
+      s = data is String ? data : jsonEncode(data);
+    } catch (_) {
+      s = data.toString();
+    }
+    s = s.replaceAll('\n', ' ');
+    if (s.length <= max) return s;
+    return '${s.substring(0, max)}...';
+  }
+
+  String? _aliasFallbackFrom(Map<String, dynamic> payload) {
+    final candidates = <dynamic>[
+      payload['RUC'],
+      payload['ruc'],
+      payload['GRUPO'],
+      payload['grupo'],
+    ];
+    for (final c in candidates) {
+      final s = c?.toString().trim();
+      if (s != null && s.isNotEmpty) return s;
     }
     return null;
+  }
+
+  void _scheduleCompatRetry({
+    required int attemptSerial,
+    required Map<String, dynamic> joinParams,
+    Map<String, dynamic>? pedirPayload,
+  }) {
+    Future.delayed(const Duration(seconds: 2), () {
+      if (_socket == null || !_isConnected) return;
+      if (_connectAttemptSerial != attemptSerial) return;
+
+      final gotPayloadRecently =
+          _lastPayloadAt != null &&
+          DateTime.now().difference(_lastPayloadAt!) <
+              const Duration(seconds: 8);
+      if (gotPayloadRecently) return;
+
+      final joinAlias = _aliasFallbackFrom(joinParams);
+      if (joinAlias != null &&
+          joinAlias != (joinParams['alias']?.toString().trim() ?? '')) {
+        final compatJoin = Map<String, dynamic>.from(joinParams)
+          ..['alias'] = joinAlias;
+        debugPrint(
+          '🧪 Sin payload tras conectar. Reintento joinRoom compat: $compatJoin',
+        );
+        _socket!.emit('joinRoom', compatJoin);
+      }
+
+      final p = Map<String, dynamic>.from(
+        pedirPayload ?? _lastPedirPayload ?? {},
+      );
+      if (p.isEmpty) return;
+      final pedirAlias = _aliasFallbackFrom(p);
+      if (pedirAlias != null &&
+          pedirAlias != (p['alias']?.toString().trim() ?? '')) {
+        final compatPedir = Map<String, dynamic>.from(p)
+          ..['alias'] = pedirAlias;
+        debugPrint(
+          '🧪 Sin payload tras conectar. Reintento PedirGrafica compat: $compatPedir',
+        );
+        _socket!.emit('PedirGrafica', compatPedir);
+      }
+    });
   }
 
   Map<String, dynamic>? _extractNoFibraFrom(
@@ -435,6 +510,7 @@ class GraphSocketProvider extends ChangeNotifier {
     _groupRucNombre = {};
     _queuedPedir = null;
     _lastPedirPayload = null;
+    _lastPayloadAt = null;
 
     // ---- Tumba socket previo (si existe) ----
     if (_socket != null) {
@@ -456,7 +532,7 @@ class GraphSocketProvider extends ChangeNotifier {
     );
 
     try {
-      _socket = IO.io('http://200.1.179.157:3000', {
+      _socket = IO.io('https://zeus.fiberlux.pe', {
         'transports': ['websocket'],
         'autoConnect': false,
         'reconnection': true,
@@ -478,6 +554,7 @@ class GraphSocketProvider extends ChangeNotifier {
   void _setupSocketListeners({String? ruc, String? grupo}) {
     _socket!
       ..on('connect', (_) async {
+        final attemptSerial = ++_connectAttemptSerial;
         debugPrint('✅ WS connected');
         _isConnected = true;
         _isConnecting = false;
@@ -495,9 +572,11 @@ class GraphSocketProvider extends ChangeNotifier {
           joinParams['RUC'] = ruc;
           joinParams['ruc'] = ruc; // compat
         }
+        debugPrint('📤 joinRoom: $joinParams');
         _socket!.emit('joinRoom', joinParams);
 
         // 🔸 PRIMERA CARGA
+        Map<String, dynamic>? firstPedirPayload;
         await Future.delayed(const Duration(milliseconds: 250));
         if (_usingGroup && (grupo != null && grupo.isNotEmpty)) {
           final pedir = {
@@ -506,11 +585,13 @@ class GraphSocketProvider extends ChangeNotifier {
             'ruc': _roomFromGroup(grupo),
           };
           debugPrint('📊 PedirGrafica init (grupo): $pedir');
+          firstPedirPayload = Map<String, dynamic>.from(pedir);
           _lastPedirPayload = Map<String, dynamic>.from(pedir);
           _socket!.emit('PedirGrafica', pedir);
         } else if (ruc != null && ruc.isNotEmpty) {
           final pedir = {'alias': 'PRTG', 'RUC': ruc, 'ruc': ruc};
           debugPrint('📊 PedirGrafica init (ruc): $pedir');
+          firstPedirPayload = Map<String, dynamic>.from(pedir);
           _lastPedirPayload = Map<String, dynamic>.from(pedir);
           _socket!.emit('PedirGrafica', pedir);
         }
@@ -524,10 +605,37 @@ class GraphSocketProvider extends ChangeNotifier {
           _queuedPedir = null;
         }
 
+        _scheduleCompatRetry(
+          attemptSerial: attemptSerial,
+          joinParams: joinParams,
+          pedirPayload: firstPedirPayload,
+        );
         notifyListeners();
       })
-      ..on('payload', (data) => _ingestarPayload(data))
-      ..on('grafica', (data) => _ingestarPayload(data))
+      ..on('payload', (data) {
+        debugPrint('📥 WS event payload: ${_short(data)}');
+        _ingestarPayload(data);
+      })
+      ..on('grafica', (data) {
+        debugPrint('📥 WS event grafica: ${_short(data)}');
+        _ingestarPayload(data);
+      })
+      ..on('message', (data) {
+        debugPrint('📥 WS event message: ${_short(data)}');
+        _ingestarPayload(data);
+      })
+      ..on('data', (data) {
+        debugPrint('📥 WS event data: ${_short(data)}');
+        _ingestarPayload(data);
+      })
+      ..on('response', (data) {
+        debugPrint('📥 WS event response: ${_short(data)}');
+        _ingestarPayload(data);
+      })
+      ..on('joinedRoom', (data) {
+        debugPrint('📨 joinedRoom: ${_short(data)}');
+      })
+      ..on('join_error', (e) => debugPrint('⚠️ join_error: ${_short(e)}'))
       ..on('disconnect', (_) {
         _isConnected = false;
         _isConnecting = false;
@@ -565,17 +673,17 @@ class GraphSocketProvider extends ChangeNotifier {
     // - 'RUC': filtro opcional dentro del grupo
     final Map<String, dynamic> payload = {
       'alias': 'PRTG',
-      if (inGroup) 'GRUPO': g!,
+      if (inGroup) 'GRUPO': g,
       if (!inGroup && ruc != null && ruc.isNotEmpty) ...{
         'RUC': ruc,
         'ruc': ruc, // compat clásica por RUC
       },
       if (inGroup && ruc != null && ruc.isNotEmpty) ...{
         'RUC': ruc, // filtro por RUC dentro del grupo
-        'ruc': _roomFromGroup(g!), // room del GRUPO, no del RUC
+        'ruc': _roomFromGroup(g), // room del GRUPO, no del RUC
       },
       if (inGroup && (ruc == null || ruc.isEmpty)) ...{
-        'ruc': _roomFromGroup(g!), // pedir TODOS los RUCs del grupo
+        'ruc': _roomFromGroup(g), // pedir TODOS los RUCs del grupo
       },
     };
 
@@ -622,6 +730,7 @@ class GraphSocketProvider extends ChangeNotifier {
     _currentRuc = null;
     _queuedPedir = null;
     _lastPedirPayload = null;
+    _lastPayloadAt = null;
     notifyListeners();
     debugPrint('🧹 Limpieza completa del GraphSocketProvider');
   }
@@ -677,6 +786,13 @@ class GraphSocketProvider extends ChangeNotifier {
           v is num ? v.toInt() : int.tryParse('${v ?? 0}'.trim()) ?? 0;
 
       final root = _asMapDeep(data);
+      if (root.isEmpty) {
+        debugPrint(
+          'ℹ️ Evento WS ignorado (sin mapa parseable): ${data.runtimeType} ${_short(data)}',
+        );
+        return;
+      }
+      _lastPayloadAt = DateTime.now();
 
       bool looksLikeContainer(Map m) =>
           m.containsKey('Resumen') ||
@@ -697,6 +813,29 @@ class GraphSocketProvider extends ChangeNotifier {
         } else if (looksLikeContainer(cG)) {
           src = cG;
         }
+      }
+
+      final seemsGraphPayload =
+          looksLikeContainer(src) ||
+          root.containsKey('leyenda') ||
+          root.containsKey('valores') ||
+          root.containsKey('labels') ||
+          root.containsKey('values') ||
+          root.containsKey('UP') ||
+          root.containsKey('DOWN') ||
+          root.containsKey('up') ||
+          root.containsKey('down') ||
+          src.containsKey('leyenda') ||
+          src.containsKey('valores') ||
+          src.containsKey('labels') ||
+          src.containsKey('values') ||
+          src.containsKey('UP') ||
+          src.containsKey('DOWN') ||
+          src.containsKey('up') ||
+          src.containsKey('down');
+      if (!seemsGraphPayload) {
+        debugPrint('ℹ️ Evento WS sin datos de gráfica, se omite.');
+        return;
       }
 
       // Secciones "clásicas"
@@ -920,7 +1059,7 @@ class GraphSocketProvider extends ChangeNotifier {
       }
       final dynamic maybeRazMap = nuevoResumen['RUCs_Razones_Map'];
       if (maybeRazMap is Map) {
-        final m = Map<String, dynamic>.from(maybeRazMap as Map);
+        final m = Map<String, dynamic>.from(maybeRazMap);
         m.forEach((k, v) {
           final r = k.toString();
           final n = (v?.toString() ?? '').trim();
@@ -979,22 +1118,21 @@ class GraphSocketProvider extends ChangeNotifier {
           extraMap[k] = entry.value;
         }
       }
+
       addExtraFrom(root);
       addExtraFrom(src);
       addExtraFrom(graficaSection);
       addExtraFrom(detalleSection);
       addExtraFrom(acordeonSection);
 
-      final noFibraFromWs = _extractNoFibraFrom(
-        [
-          root,
-          src,
-          graficaSection,
-          detalleSection,
-          acordeonSection,
-          nuevoResumen,
-        ],
-      );
+      final noFibraFromWs = _extractNoFibraFrom([
+        root,
+        src,
+        graficaSection,
+        detalleSection,
+        acordeonSection,
+        nuevoResumen,
+      ]);
       if (noFibraFromWs != null && noFibraFromWs.isNotEmpty) {
         extraMap['NoFibra'] = noFibraFromWs;
       } else if (_noFibraFromApi != null && _noFibraFromApi!.isNotEmpty) {
@@ -1069,7 +1207,7 @@ class GraphSocketProvider extends ChangeNotifier {
     _lastNoFibraFetch = now;
 
     try {
-      final uri = Uri.parse('http://200.1.179.157:3000/App/');
+      final uri = Uri.parse('https://zeus.fiberlux.pe/App/');
       final resp = await http
           .post(
             uri,
@@ -1082,9 +1220,7 @@ class GraphSocketProvider extends ChangeNotifier {
           .timeout(const Duration(seconds: 15));
 
       if (resp.statusCode < 200 || resp.statusCode >= 300) {
-        debugPrint(
-          '⚠️ /App/ NoFibra HTTP ${resp.statusCode}: ${resp.body}',
-        );
+        debugPrint('⚠️ /App/ NoFibra HTTP ${resp.statusCode}: ${resp.body}');
         return;
       }
 
@@ -1093,15 +1229,13 @@ class GraphSocketProvider extends ChangeNotifier {
       if (decoded is! Map) return;
 
       final root = _asMapDeep(decoded);
-      final noFibra = _extractNoFibraFrom(
-        [
-          root,
-          _asMapDeep(root['Resumen']),
-          _asMapDeep(root['resumen']),
-          _asMapDeep(root['Grafica']),
-          _asMapDeep(root['grafica']),
-        ],
-      );
+      final noFibra = _extractNoFibraFrom([
+        root,
+        _asMapDeep(root['Resumen']),
+        _asMapDeep(root['resumen']),
+        _asMapDeep(root['Grafica']),
+        _asMapDeep(root['grafica']),
+      ]);
       if (noFibra == null || noFibra.isEmpty) return;
 
       _noFibraFromApi = noFibra;
@@ -1141,6 +1275,7 @@ class GraphSocketProvider extends ChangeNotifier {
     _connCompleter = null;
     _queuedPedir = null;
     _lastPedirPayload = null;
+    _lastPayloadAt = null;
     msg = '';
     _currentRuc = null;
     notifyListeners();
