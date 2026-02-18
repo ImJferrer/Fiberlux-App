@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:fiberlux_new_app/providers/notifications_provider.dart';
 import 'package:fiberlux_new_app/services/api_services.dart';
 import 'package:fiberlux_new_app/services/fcm_service.dart';
@@ -8,12 +10,19 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:crypto/crypto.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
 
 import '../providers/SessionProvider.dart';
 import '../providers/graph_socket_provider.dart';
 import '../providers/loader_provider.dart';
 import 'main_screen.dart';
 import 'olvido_contra.dart';
+
+const String _kSavedLoginPassword = 'saved_login_password';
+const FlutterSecureStorage _secureStorage = FlutterSecureStorage(
+  aOptions: AndroidOptions(encryptedSharedPreferences: true),
+);
 
 /// Convierte una contraseña en texto plano a su hash SHA-256 en hexadecimal.
 String hashPassword(String password) {
@@ -222,6 +231,25 @@ class _LoginScreenState extends State<LoginScreen> {
         listen: false,
       );
 
+      final savedUsername =
+          prefs.getString('saved_username') ?? sessionProv.usuario ?? '';
+      var savedPassword =
+          (await _secureStorage.read(key: _kSavedLoginPassword)) ?? '';
+      if (savedPassword.isEmpty) {
+        final legacy = prefs.getString(_kSavedLoginPassword) ?? '';
+        if (legacy.isNotEmpty) {
+          savedPassword = legacy;
+          await _secureStorage.write(key: _kSavedLoginPassword, value: legacy);
+          await prefs.remove(_kSavedLoginPassword);
+        }
+      }
+      if (savedUsername.trim().isNotEmpty && savedPassword.isNotEmpty) {
+        sessionProv.setRuntimeLoginCredentials(
+          username: savedUsername,
+          password: savedPassword,
+        );
+      }
+
       final savedRuc = prefs.getString('saved_ruc') ?? sessionProv.ruc;
       final access = sessionProv.accessToken ?? prefs.getString('access_token');
 
@@ -266,7 +294,6 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
     setState(() => _errorMessage = null);
 
-    // OJO: no fuerces a lowerCase si tu backend diferencia mayúsculas.
     final username = _userController.text.trim();
     final password = _passwordController.text.trim();
 
@@ -279,7 +306,6 @@ class _LoginScreenState extends State<LoginScreen> {
     final sessionProv = Provider.of<SessionProvider>(context, listen: false);
     final socketProv = Provider.of<GraphSocketProvider>(context, listen: false);
 
-    // Asegura que no quede nada del WS previo
     socketProv.disconnect();
     socketProv.clearData();
 
@@ -312,11 +338,11 @@ class _LoginScreenState extends State<LoginScreen> {
         );
       }
 
-      // 2) Cargar sesión (igual comportamiento que antes)
+      // 2) Cargar sesión
       sessionProv.setLogin(
         isSocial: false,
         nombre: firstName.isNotEmpty ? firstName : uname,
-        apellido: lastName.trim().isEmpty ? null : lastName, // (legado)
+        apellido: lastName.trim().isEmpty ? null : lastName,
         ruc: ruc,
         usuario: uname,
         rol: isStaff ? 'STAFF' : 'USUARIO',
@@ -324,13 +350,17 @@ class _LoginScreenState extends State<LoginScreen> {
         photoUrl: null,
       );
 
-      // 3) Persistir tokens/flags de Arcus en SessionProvider
+      // 3) Persistir tokens/flags de Arcus
       sessionProv.setArcusAuth(
         access: access,
         refresh: refresh,
         userId: userId,
         isStaff: isStaff,
         isActive: isActive,
+      );
+      sessionProv.setRuntimeLoginCredentials(
+        username: uname,
+        password: password,
       );
 
       // 👉 Avisar al NotificationsProvider quién soy
@@ -348,17 +378,24 @@ class _LoginScreenState extends State<LoginScreen> {
       await prefs.setInt('user_id', userId);
       await prefs.setString('access_token', access);
       await prefs.setString('refresh_token', refresh);
-      // 6) Conectar WebSocket con el RUC de Arcus
+      if (rememberPassword) {
+        await _secureStorage.write(key: _kSavedLoginPassword, value: password);
+        await prefs.remove(_kSavedLoginPassword);
+      } else {
+        await _secureStorage.delete(key: _kSavedLoginPassword);
+        await prefs.remove(_kSavedLoginPassword);
+      }
+
+      // 5) Conectar WebSocket con el RUC de Arcus
       await socketProv.connect(ruc, colores);
 
-      // 7) Registrar FCM por RUC (NO bloquear el login si falla)
+      // 6) Registrar FCM por RUC
       final grupoEconomico = (resp['GRUPO_ECONOMICO'] ?? '').toString().trim();
-
-      // ✅ Persistir en sesión (prefs) si vino en el login
       if (grupoEconomico.isNotEmpty) {
         sessionProv.setGrupoNombre(grupoEconomico);
       }
 
+      String fcmTokenReal = 'N/A';
       try {
         final fcmToken = await FcmService.instance.ensureRegistered(
           ruc: ruc,
@@ -368,8 +405,43 @@ class _LoginScreenState extends State<LoginScreen> {
           vistaRuc: false,
         );
         notifProv.setCurrentDeviceToken(fcmToken);
+        fcmTokenReal = fcmToken ?? 'N/A';
       } catch (_) {
         // no rompas el flujo si /FCM falla
+      }
+
+      // 7) Registrar sesión en el servidor de pánico (con FCM real)
+      try {
+        final deviceInfo = DeviceInfoPlugin();
+        String deviceOS = 'Desconocido';
+        if (Platform.isAndroid) {
+          final androidInfo = await deviceInfo.androidInfo;
+          deviceOS = 'Android ${androidInfo.version.release}';
+        } else if (Platform.isIOS) {
+          final iosInfo = await deviceInfo.iosInfo;
+          deviceOS = 'iOS ${iosInfo.systemVersion}';
+        }
+
+        await http
+            .post(
+              Uri.parse('https://zeus.fiberlux.pe/api/register-session'),
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'RUC': ruc,
+                'Username': uname,
+                'grupoEconomico': grupoEconomico.isNotEmpty
+                    ? grupoEconomico
+                    : 'N/A',
+                'fcmToken': fcmTokenReal,
+                'appName': 'Fiberlux App',
+                'deviceOS': deviceOS,
+                'email': email.trim().isEmpty ? 'N/A' : email,
+                'isStaff': isStaff,
+              }),
+            )
+            .timeout(const Duration(seconds: 5));
+      } catch (_) {
+        // no rompas el flujo si el servidor de pánico falla
       }
 
       loaderProv.hideLoader();

@@ -1,6 +1,7 @@
 import 'package:fiberlux_new_app/widgets/buildAppBarNotifications/buildappbarnotifications.dart';
 import 'package:fiberlux_new_app/widgets/menu.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../providers/SessionProvider.dart';
 import '../providers/googleUser_provider.dart';
@@ -14,6 +15,9 @@ import 'package:provider/provider.dart';
 
 /// ====== Estilos y Helpers ======
 const _brandColor = Color(0xFFA4238E);
+const FlutterSecureStorage _secureStorage = FlutterSecureStorage(
+  aOptions: AndroidOptions(encryptedSharedPreferences: true),
+);
 
 class _SectionCard extends StatelessWidget {
   final String title;
@@ -1135,6 +1139,10 @@ class _UserProfileScreenState extends State<UserProfileWidget>
                                   await prefs.remove('remember_login');
                                   await prefs.remove('saved_username');
                                   await prefs.remove('saved_ruc');
+                                  await prefs.remove('saved_login_password');
+                                  await _secureStorage.delete(
+                                    key: 'saved_login_password',
+                                  );
 
                                   if (!context.mounted) return;
                                   Navigator.of(context).pushAndRemoveUntil(

@@ -1,4 +1,5 @@
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../providers/SessionProvider.dart';
 import '../providers/googleUser_provider.dart';
 import '../providers/graph_socket_provider.dart';
@@ -9,6 +10,10 @@ import '../view/perfil.dart';
 import '../view/encuesta.dart'; // ← NUEVO
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
+const FlutterSecureStorage _secureStorage = FlutterSecureStorage(
+  aOptions: AndroidOptions(encryptedSharedPreferences: true),
+);
 
 class FiberluxDrawer extends StatelessWidget {
   const FiberluxDrawer({Key? key}) : super(key: key);
@@ -134,6 +139,8 @@ class FiberluxDrawer extends StatelessWidget {
                   await prefs.remove('remember_login');
                   await prefs.remove('saved_username');
                   await prefs.remove('saved_ruc');
+                  await prefs.remove('saved_login_password');
+                  await _secureStorage.delete(key: 'saved_login_password');
 
                   if (!context.mounted) return;
                   Navigator.of(context).pushAndRemoveUntil(

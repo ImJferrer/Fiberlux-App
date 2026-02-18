@@ -13,6 +13,8 @@ class SessionProvider extends ChangeNotifier {
   int? _userId;
   bool? _isStaffFlag;
   bool? _isActiveFlag;
+  String? _sessionUsername;
+  String? _sessionPassword;
 
   // 🔔 Estado global de notificaciones sin leer
   bool _hasUnreadNotifications = false;
@@ -31,6 +33,8 @@ class SessionProvider extends ChangeNotifier {
   int? get userId => _userId;
   bool? get isStaffFlag => _isStaffFlag;
   bool? get isActiveFlag => _isActiveFlag;
+  String? get sessionUsername => _sessionUsername;
+  String? get sessionPassword => _sessionPassword;
 
   // Útil para requests
   Map<String, String> get authHeader =>
@@ -199,6 +203,20 @@ class SessionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setRuntimeLoginCredentials({
+    required String username,
+    required String password,
+  }) {
+    final u = username.trim();
+    _sessionUsername = u.isEmpty ? null : u;
+    _sessionPassword = password;
+  }
+
+  void clearRuntimeLoginCredentials() {
+    _sessionUsername = null;
+    _sessionPassword = null;
+  }
+
   void updateAccessToken(String access, {String? refresh}) {
     _accessToken = access;
     _prefs.setString('access_token', access);
@@ -215,6 +233,7 @@ class SessionProvider extends ChangeNotifier {
     _userId = null;
     _isStaffFlag = null;
     _isActiveFlag = null;
+    clearRuntimeLoginCredentials();
 
     for (final k in [
       'access_token',
@@ -257,6 +276,9 @@ class SessionProvider extends ChangeNotifier {
 
     _ruc = ruc;
     _usuario = usuario;
+    if (usuario != null && usuario.trim().isNotEmpty) {
+      _sessionUsername = usuario.trim();
+    }
     _rol = rol;
     _email = email;
     _photoUrl = photoUrl;
@@ -329,6 +351,9 @@ class SessionProvider extends ChangeNotifier {
       'user_id',
       'is_staff',
       'is_active',
+      'remember_login',
+      'saved_username',
+      'saved_ruc',
       'isValidated',
       'nombre',
       'apellido', // legado
@@ -376,6 +401,7 @@ class SessionProvider extends ChangeNotifier {
     _notiApp = null;
     _notiWsp = null;
     _notiVoz = null;
+    clearRuntimeLoginCredentials();
 
     notifyListeners();
   }

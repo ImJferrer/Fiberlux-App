@@ -536,7 +536,7 @@ class _TicketsScreenState extends State<TicketsScreen> {
     required String nombre,
     required bool isRequerimientos,
   }) async {
-    final uri = Uri.parse("http://200.1.179.157:3000/CrearPRE");
+    final uri = Uri.parse("https://zeus.fiberlux.pe/CrearPRE");
 
     // 1 = incidencia, 2 = requerimiento
     final int typeTicket = isRequerimientos ? 2 : 1;
@@ -554,8 +554,20 @@ class _TicketsScreenState extends State<TicketsScreen> {
     // Contacto
     final String contact = '${nombre.trim()} - ${telefono.trim()}';
 
-    // Username y password (según PRE)
-    final String password = '${ruc.trim()}\$';
+    // Username/password del login actual (no hardcodeados en app).
+    final String username = (sp.sessionUsername ?? sp.usuario ?? '').trim();
+    final String password = (sp.sessionPassword ?? '').trim();
+
+    if (username.isEmpty) {
+      throw Exception(
+        'No se encontró el usuario de la sesión. Cierra e inicia sesión nuevamente.',
+      );
+    }
+    if (password.isEmpty) {
+      throw Exception(
+        'Por seguridad, vuelve a iniciar sesión para enviar tickets.',
+      );
+    }
 
     final headers = {
       "Content-Type": "application/json",
@@ -573,8 +585,8 @@ class _TicketsScreenState extends State<TicketsScreen> {
       "ruc": ruc.trim(),
       "district": addr.distrito.trim(),
       "executive": "CHIRINOS RAMIREZ ROCIO VIRGINIA",
-      "username": "dmagisterial",
-      "password": "123456789%",
+      "username": username,
+      "password": password,
     });
 
     final resp = await http.post(uri, headers: headers, body: body);
